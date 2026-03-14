@@ -6,6 +6,7 @@ use adk_rust::{
 };
 use anyhow::{Result, anyhow};
 use serde::Serialize;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -95,6 +96,13 @@ impl ToolCallEngine {
         tool_name: String,
         args: serde_json::Value,
     ) -> Result<ToolExecutionResult> {
+        info!(
+            session_id = %session_id,
+            user_id = %user_id,
+            tool = %tool_name,
+            args_preview = %preview_json(&args, 200),
+            "dispatching direct tool invocation"
+        );
         self.registry
             .execute(ToolExecutionRequest {
                 app_name: self.app_name.clone(),
@@ -119,7 +127,7 @@ impl ToolCallEngine {
         let user_content = Content::new("user").with_text(request.message.clone());
 
         let mut transcript = VecDeque::new();
-        transcript.push_back(Content::new("system").with_text(system_prompt));
+        transcript.push_back(Content::new("system").with_text(system_prompt.clone()));
         for item in self.session_store.snapshot(&request.session_id).await {
             transcript.push_back(item);
         }
@@ -132,8 +140,30 @@ impl ToolCallEngine {
         let mut final_content = None;
         let mut finish_reason = None;
 
+        info!(
+            session_id = %request.session_id,
+            user_id = %request.user_id,
+            max_iterations,
+            persisted_history = request.persist,
+            prior_message_count = transcript.len().saturating_sub(2),
+            "starting tool-call turn"
+        );
+        debug!(
+            session_id = %request.session_id,
+            system_prompt_preview = %preview_text(&system_prompt, 200),
+            user_message_preview = %preview_text(&request.message, 200),
+            "prepared turn transcript"
+        );
+
         for index in 0..max_iterations {
             iterations = index + 1;
+            info!(
+                session_id = %request.session_id,
+                user_id = %request.user_id,
+                iteration = iterations,
+                transcript_messages = transcript.len(),
+                "requesting llm response"
+            );
             let response = self
                 .collect_llm_response(transcript.make_contiguous().to_vec())
                 .await?;
@@ -143,15 +173,36 @@ impl ToolCallEngine {
                 .content
                 .unwrap_or_else(|| Content::new("model").with_text(""));
             let function_calls = extract_function_calls(&model_content);
+            info!(
+                session_id = %request.session_id,
+                iteration = iterations,
+                finish_reason = ?finish_reason.as_ref().map(finish_reason_to_string),
+                function_call_count = function_calls.len(),
+                model_text_preview = %preview_text(&extract_text(&model_content), 160),
+                "received llm response"
+            );
             transcript.push_back(model_content.clone());
             turn_messages.push(model_content.clone());
 
             if function_calls.is_empty() {
                 final_content = Some(model_content);
+                info!(
+                    session_id = %request.session_id,
+                    iteration = iterations,
+                    "llm returned final answer without further tool calls"
+                );
                 break;
             }
 
             for function_call in function_calls {
+                info!(
+                    session_id = %request.session_id,
+                    iteration = iterations,
+                    function_call_id = %function_call.function_call_id,
+                    tool = %function_call.name,
+                    args_preview = %preview_json(&function_call.args, 200),
+                    "dispatching tool call"
+                );
                 let tool_result = self
                     .dispatch_tool_call(
                         &request,
@@ -164,12 +215,22 @@ impl ToolCallEngine {
 
                 let (tool_trace, tool_content) = match tool_result {
                     Ok(result) => (
-                        ToolCallTrace {
-                            function_call_id: result.function_call_id.clone(),
-                            name: result.tool_name.clone(),
-                            args: result.args.clone(),
-                            status: "ok".to_string(),
-                            output: result.output.clone(),
+                        {
+                            info!(
+                                session_id = %request.session_id,
+                                iteration = iterations,
+                                function_call_id = %result.function_call_id,
+                                tool = %result.tool_name,
+                                output_preview = %preview_json(&result.output, 200),
+                                "tool call completed"
+                            );
+                            ToolCallTrace {
+                                function_call_id: result.function_call_id.clone(),
+                                name: result.tool_name.clone(),
+                                args: result.args.clone(),
+                                status: "ok".to_string(),
+                                output: result.output.clone(),
+                            }
                         },
                         Content {
                             role: "tool".to_string(),
@@ -183,6 +244,14 @@ impl ToolCallEngine {
                         },
                     ),
                     Err(error) => {
+                        warn!(
+                            session_id = %request.session_id,
+                            iteration = iterations,
+                            function_call_id = %function_call.function_call_id,
+                            tool = %function_call.name,
+                            error = %error,
+                            "tool call failed"
+                        );
                         let failure = ToolExecutionFailure {
                             function_call_id: function_call.function_call_id.clone(),
                             tool_name: function_call.name.clone(),
@@ -222,6 +291,12 @@ impl ToolCallEngine {
         }
 
         let final_content = final_content.ok_or_else(|| {
+            warn!(
+                session_id = %request.session_id,
+                user_id = %request.user_id,
+                max_iterations,
+                "tool-call loop reached max iterations without final answer"
+            );
             anyhow!("tool-call loop reached max iterations without a final assistant answer")
         })?;
 
@@ -229,6 +304,11 @@ impl ToolCallEngine {
             self.session_store
                 .append_many(&request.session_id, turn_messages.iter().cloned())
                 .await;
+            debug!(
+                session_id = %request.session_id,
+                appended_messages = turn_messages.len(),
+                "persisted turn messages to session store"
+            );
         }
 
         let answer = extract_text(&final_content);
@@ -240,11 +320,21 @@ impl ToolCallEngine {
             turn_messages.len()
         };
 
+        info!(
+            session_id = %request.session_id,
+            user_id = %request.user_id,
+            iterations,
+            tool_call_count = traces.len(),
+            answer_preview = %preview_text(&answer, 200),
+            session_message_count,
+            "finished tool-call turn"
+        );
+
         Ok(ChatTurnResponse {
             session_id: request.session_id,
             user_id: request.user_id,
             answer,
-            finish_reason: finish_reason.map(finish_reason_to_string),
+            finish_reason: finish_reason.as_ref().map(finish_reason_to_string),
             iterations,
             tool_calls: traces,
             turn_messages: turn_messages.iter().map(MessageView::from).collect(),
@@ -253,6 +343,12 @@ impl ToolCallEngine {
     }
 
     async fn collect_llm_response(&self, contents: Vec<Content>) -> Result<LlmResponse> {
+        debug!(
+            llm = self.llm.name(),
+            input_message_count = contents.len(),
+            tool_schema_count = self.registry.schemas().len(),
+            "collecting llm response stream"
+        );
         let mut request = LlmRequest::new(self.llm.name().to_string(), contents);
         request.tools = self.registry.schemas();
 
@@ -289,6 +385,13 @@ impl ToolCallEngine {
             })
         };
 
+        debug!(
+            llm = self.llm.name(),
+            finish_reason = ?finish_reason.as_ref().map(finish_reason_to_string),
+            part_count = content.as_ref().map(|item| item.parts.len()).unwrap_or_default(),
+            "assembled llm response stream"
+        );
+
         Ok(LlmResponse {
             content,
             usage_metadata,
@@ -323,6 +426,7 @@ impl ToolCallEngine {
             })
             .await
     }
+
 }
 
 #[derive(Debug, Clone)]
@@ -363,7 +467,7 @@ fn extract_text(content: &Content) -> String {
     text.trim().to_string()
 }
 
-fn finish_reason_to_string(reason: FinishReason) -> String {
+fn finish_reason_to_string(reason: &FinishReason) -> String {
     match reason {
         FinishReason::Stop => "stop",
         FinishReason::MaxTokens => "max_tokens",
@@ -372,6 +476,22 @@ fn finish_reason_to_string(reason: FinishReason) -> String {
         FinishReason::Other => "other",
     }
     .to_string()
+}
+
+fn preview_text(input: &str, limit: usize) -> String {
+    let mut preview = input.trim().replace('\n', "\\n");
+    if preview.chars().count() > limit {
+        preview = preview.chars().take(limit).collect::<String>();
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn preview_json(value: &serde_json::Value, limit: usize) -> String {
+    preview_text(
+        &serde_json::to_string(value).unwrap_or_else(|_| "<invalid-json>".to_string()),
+        limit,
+    )
 }
 
 #[cfg(test)]

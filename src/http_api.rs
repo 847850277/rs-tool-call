@@ -9,6 +9,7 @@ use salvo::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tracing::{debug, error, info};
 
 use crate::{
     config::AppConfig,
@@ -128,13 +129,17 @@ async fn health(depot: &mut Depot, res: &mut Response) {
 #[handler]
 async fn list_tools(depot: &mut Depot, res: &mut Response) {
     let state = app_state(depot);
-    res.render(Json(state.engine.tools()));
+    let tools = state.engine.tools();
+    debug!(tool_count = tools.len(), "listing tools");
+    res.render(Json(tools));
 }
 
 #[handler]
 async fn list_sessions(depot: &mut Depot, res: &mut Response) {
     let state = app_state(depot);
-    res.render(Json(state.engine.list_sessions().await));
+    let sessions = state.engine.list_sessions().await;
+    debug!(session_count = sessions.len(), "listing sessions");
+    res.render(Json(sessions));
 }
 
 #[handler]
@@ -154,6 +159,12 @@ async fn session_history(req: &mut Request, depot: &mut Depot, res: &mut Respons
     };
     let limit = req.query::<usize>("limit");
     let history = state.engine.session_history(&session_id, limit).await;
+    debug!(
+        session_id = %session_id,
+        limit = ?limit,
+        message_count = history.len(),
+        "loaded session history"
+    );
     res.render(Json(history));
 }
 
@@ -172,6 +183,16 @@ async fn chat(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         }
     };
     let state = app_state(depot);
+    let session_id = body.session_id.clone();
+    let user_id = body.user_id.clone();
+    info!(
+        session_id = %session_id,
+        user_id = %user_id,
+        persist = body.persist,
+        requested_max_iterations = ?body.max_iterations,
+        message_preview = %preview_text(&body.message, 160),
+        "received chat request"
+    );
 
     match state
         .engine
@@ -185,13 +206,32 @@ async fn chat(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         })
         .await
     {
-        Ok(response) => res.render(Json(response)),
-        Err(error) => render_error(
-            res,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "tool_loop_failed",
-            &error.to_string(),
-        ),
+        Ok(response) => {
+            info!(
+                session_id = %response.session_id,
+                user_id = %response.user_id,
+                iterations = response.iterations,
+                tool_call_count = response.tool_calls.len(),
+                finish_reason = ?response.finish_reason,
+                answer_preview = %preview_text(&response.answer, 160),
+                "completed chat request"
+            );
+            res.render(Json(response));
+        }
+        Err(error) => {
+            error!(
+                session_id = %session_id,
+                user_id = %user_id,
+                error = %error,
+                "chat request failed"
+            );
+            render_error(
+                res,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "tool_loop_failed",
+                &error.to_string(),
+            )
+        }
     }
 }
 
@@ -211,22 +251,40 @@ async fn invoke_tool(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     };
     let state = app_state(depot);
     let args = merge_action_into_args(body.args, body.action);
+    info!(
+        session_id = %body.session_id,
+        user_id = %body.user_id,
+        tool = %body.tool,
+        args_preview = %preview_value(&args, 200),
+        "received direct tool invocation"
+    );
 
     match state
         .engine
         .invoke_tool(body.user_id, body.session_id, body.tool, args)
         .await
     {
-        Ok(result) => res.render(Json(ToolInvokeResponse {
-            ok: true,
-            result: result.output,
-        })),
-        Err(error) => render_error(
-            res,
-            StatusCode::BAD_REQUEST,
-            "tool_execution_failed",
-            &error.to_string(),
-        ),
+        Ok(result) => {
+            info!(
+                tool = %result.tool_name,
+                function_call_id = %result.function_call_id,
+                output_preview = %preview_value(&result.output, 200),
+                "completed direct tool invocation"
+            );
+            res.render(Json(ToolInvokeResponse {
+                ok: true,
+                result: result.output,
+            }))
+        }
+        Err(error) => {
+            error!(error = %error, "direct tool invocation failed");
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "tool_execution_failed",
+                &error.to_string(),
+            )
+        }
     }
 }
 
@@ -263,6 +321,22 @@ fn render_error(res: &mut Response, status: StatusCode, error_type: &'static str
             message: message.to_string(),
         },
     }));
+}
+
+fn preview_text(input: &str, limit: usize) -> String {
+    let mut preview = input.trim().replace('\n', "\\n");
+    if preview.chars().count() > limit {
+        preview = preview.chars().take(limit).collect::<String>();
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn preview_value(value: &Value, limit: usize) -> String {
+    preview_text(
+        &serde_json::to_string(value).unwrap_or_else(|_| "<invalid-json>".to_string()),
+        limit,
+    )
 }
 
 fn default_args() -> Value {
