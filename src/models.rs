@@ -11,13 +11,15 @@ use crate::config::{LlmConfig, LlmProvider};
 
 pub fn build_llm(config: &LlmConfig) -> Result<Arc<dyn Llm>> {
     let model: Arc<dyn Llm> = match config.provider {
-        LlmProvider::OpenAi => Arc::new(OpenAIClient::new(OpenAIConfig {
-            api_key: config.api_key.clone(),
-            model: config.model.clone(),
-            organization_id: None,
-            project_id: None,
-            base_url: config.base_url.clone(),
-        })?),
+        LlmProvider::OpenAi | LlmProvider::Glm | LlmProvider::SiliconFlow => {
+            Arc::new(OpenAIClient::new(OpenAIConfig {
+                api_key: config.api_key.clone(),
+                model: config.model.clone(),
+                organization_id: None,
+                project_id: None,
+                base_url: config.base_url.clone(),
+            })?)
+        }
         LlmProvider::Gemini => {
             #[cfg(feature = "gemini-provider")]
             {

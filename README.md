@@ -47,6 +47,27 @@ export OPENAI_API_KEY=your-key
 export LLM_MODEL=gpt-4o-mini
 ```
 
+SiliconFlow GLM:
+
+```bash
+export LLM_PROVIDER=siliconflow
+export SILICONFLOW_API_KEY=your-key
+export LLM_MODEL=zai-org/GLM-4.6
+# SiliconFlow 控制台 models 页面不是推理 API；服务端地址默认是 https://api.siliconflow.cn/v1
+# export SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
+```
+
+阿里百炼 GLM:
+
+```bash
+export LLM_PROVIDER=glm
+export DASHSCOPE_API_KEY=your-key
+export LLM_MODEL=glm-5
+# 默认走北京 endpoint；如果你的 key 在其他地域，覆盖为对应地址
+# export DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+# export DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/compatible-mode/v1
+```
+
 Gemini:
 
 ```bash
@@ -61,6 +82,15 @@ export LLM_MODEL=gemini-2.5-flash
 ```bash
 cargo run
 ```
+
+说明：
+
+- `LLM_PROVIDER=siliconflow` 按 SiliconFlow 的 OpenAI 兼容接口处理，默认地址是 `https://api.siliconflow.cn/v1`。
+- 如果你想切换到 SiliconFlow 的其他 GLM 型号，直接覆盖 `LLM_MODEL`，例如 `Pro/zai-org/GLM-5`。
+- `LLM_PROVIDER=glm` 现在按阿里百炼的 OpenAI 兼容接口处理。
+- 默认 `base_url` 是北京地域 `https://dashscope.aliyuncs.com/compatible-mode/v1`。
+- 你也可以用 `DASHSCOPE_BASE_URL`、`BAILIAN_BASE_URL`、`GLM_BASE_URL` 覆盖地域 endpoint。
+- API key 支持 `DASHSCOPE_API_KEY`、`BAILIAN_API_KEY`、`GLM_API_KEY`、`LLM_API_KEY`。
 
 ## 请求示例
 

@@ -20,6 +20,8 @@ pub struct LlmConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {
     OpenAi,
+    Glm,
+    SiliconFlow,
     Gemini,
 }
 
@@ -30,18 +32,10 @@ impl AppConfig {
         let provider = LlmProvider::from_env()?;
         let model =
             std::env::var("LLM_MODEL").unwrap_or_else(|_| provider.default_model().to_string());
-        let base_url = std::env::var("OPENAI_BASE_URL")
-            .ok()
-            .or_else(|| std::env::var("LLM_BASE_URL").ok());
-
-        let api_key = match provider {
-            LlmProvider::OpenAi => std::env::var("OPENAI_API_KEY")
-                .or_else(|_| std::env::var("LLM_API_KEY"))
-                .context("missing OPENAI_API_KEY or LLM_API_KEY")?,
-            LlmProvider::Gemini => std::env::var("GOOGLE_API_KEY")
-                .or_else(|_| std::env::var("LLM_API_KEY"))
-                .context("missing GOOGLE_API_KEY or LLM_API_KEY")?,
-        };
+        let base_url = first_env(provider.base_url_envs())
+            .or_else(|| provider.default_base_url().map(str::to_string));
+        let api_key = first_env(provider.api_key_envs())
+            .with_context(|| format!("missing one of {}", provider.api_key_envs().join(", ")))?;
 
         let max_iterations = match std::env::var("MAX_TOOL_ITERATIONS") {
             Ok(raw) => raw
@@ -74,8 +68,14 @@ impl AppConfig {
 impl LlmProvider {
     fn from_env() -> Result<Self> {
         let raw = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string());
+        Self::parse(&raw)
+    }
+
+    fn parse(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "openai" => Ok(Self::OpenAi),
+            "glm" | "bailian" | "dashscope" => Ok(Self::Glm),
+            "siliconflow" | "silicon-flow" | "silicon" => Ok(Self::SiliconFlow),
             "gemini" => Ok(Self::Gemini),
             other => Err(anyhow!("unsupported LLM_PROVIDER: {other}")),
         }
@@ -84,6 +84,8 @@ impl LlmProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
+            Self::Glm => "glm",
+            Self::SiliconFlow => "siliconflow",
             Self::Gemini => "gemini",
         }
     }
@@ -91,7 +93,90 @@ impl LlmProvider {
     fn default_model(self) -> &'static str {
         match self {
             Self::OpenAi => "gpt-4o-mini",
+            Self::Glm => "glm-5",
+            Self::SiliconFlow => "zai-org/GLM-4.6",
             Self::Gemini => "gemini-2.5-flash",
         }
+    }
+
+    fn default_base_url(self) -> Option<&'static str> {
+        match self {
+            Self::OpenAi => None,
+            Self::Glm => Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            Self::SiliconFlow => Some("https://api.siliconflow.cn/v1"),
+            Self::Gemini => None,
+        }
+    }
+
+    fn api_key_envs(self) -> &'static [&'static str] {
+        match self {
+            Self::OpenAi => &["OPENAI_API_KEY", "LLM_API_KEY"],
+            Self::Glm => &[
+                "DASHSCOPE_API_KEY",
+                "BAILIAN_API_KEY",
+                "GLM_API_KEY",
+                "LLM_API_KEY",
+            ],
+            Self::SiliconFlow => &["SILICONFLOW_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY"],
+            Self::Gemini => &["GOOGLE_API_KEY", "LLM_API_KEY"],
+        }
+    }
+
+    fn base_url_envs(self) -> &'static [&'static str] {
+        match self {
+            Self::OpenAi => &["OPENAI_BASE_URL", "LLM_BASE_URL"],
+            Self::Glm => &[
+                "DASHSCOPE_BASE_URL",
+                "BAILIAN_BASE_URL",
+                "GLM_BASE_URL",
+                "OPENAI_BASE_URL",
+                "LLM_BASE_URL",
+            ],
+            Self::SiliconFlow => &["SILICONFLOW_BASE_URL", "OPENAI_BASE_URL", "LLM_BASE_URL"],
+            Self::Gemini => &["LLM_BASE_URL"],
+        }
+    }
+}
+
+fn first_env(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| std::env::var(key).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LlmProvider;
+
+    #[test]
+    fn glm_aliases_are_supported() {
+        for raw in ["glm", "bailian", "dashscope"] {
+            let provider = LlmProvider::parse(raw).expect("glm alias");
+            assert_eq!(provider.as_str(), "glm");
+        }
+    }
+
+    #[test]
+    fn glm_defaults_match_bailian_openai_compatible_endpoint() {
+        assert_eq!(LlmProvider::Glm.default_model(), "glm-5");
+        assert_eq!(
+            LlmProvider::Glm.default_base_url(),
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1")
+        );
+    }
+
+    #[test]
+    fn siliconflow_aliases_are_supported() {
+        for raw in ["siliconflow", "silicon-flow", "silicon"] {
+            let provider = LlmProvider::parse(raw).expect("siliconflow alias");
+            assert_eq!(provider.as_str(), "siliconflow");
+        }
+    }
+
+    #[test]
+    fn siliconflow_defaults_match_openai_compatible_endpoint() {
+        assert_eq!(LlmProvider::SiliconFlow.default_model(), "zai-org/GLM-4.6");
+        assert_eq!(
+            LlmProvider::SiliconFlow.default_base_url(),
+            Some("https://api.siliconflow.cn/v1")
+        );
     }
 }
