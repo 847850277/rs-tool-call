@@ -1,0 +1,23 @@
+[package]
+name = "rs-tool-call"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+gemini-provider = ["adk-model/gemini"]
+
+[dependencies]
+adk-model = { version = "0.3.2", default-features = false, features = ["openai"] }
+adk-rust = { version = "0.3.2", default-features = false, features = ["tools"] }
+anyhow = "1.0.102"
+async-trait = "0.1.89"
+dotenvy = "0.15.7"
+salvo = { version = "0.89.2", default-features = false, features = ["server", "http1"] }
+schemars = "0.8.22"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "sync"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.22.0", features = ["v4"] }
