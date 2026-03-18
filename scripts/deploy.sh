@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -Eeuo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INVOCATION_DIR="$(pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
 CONTAINER_NAME="${CONTAINER_NAME:-rs-tool-call}"
@@ -28,6 +34,33 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
+}
+
+resolve_env_file() {
+  local candidate="$ENV_FILE"
+  local -a search_paths=()
+
+  if [[ "$candidate" == /* ]]; then
+    [[ -f "$candidate" ]] || fail "env file not found: $candidate"
+    ENV_FILE="$candidate"
+    return
+  fi
+
+  search_paths=(
+    "$ROOT_DIR/$candidate"
+    "$INVOCATION_DIR/$candidate"
+    "$SCRIPT_DIR/$candidate"
+  )
+
+  local path=""
+  for path in "${search_paths[@]}"; do
+    if [[ -f "$path" ]]; then
+      ENV_FILE="$path"
+      return
+    fi
+  done
+
+  fail "env file not found: $candidate"
 }
 
 assert_clean_worktree() {
@@ -91,8 +124,8 @@ main() {
   require_command docker
 
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "current directory is not a git repository"
-  [[ -f "$ENV_FILE" ]] || fail "env file not found: $ENV_FILE"
   [[ "$BRANCH_NAME" != "HEAD" ]] || fail "detached HEAD is not supported; set BRANCH_NAME explicitly"
+  resolve_env_file
 
   assert_clean_worktree
 
@@ -100,6 +133,7 @@ main() {
   git fetch "$REMOTE_NAME" "$BRANCH_NAME"
   git pull --ff-only "$REMOTE_NAME" "$BRANCH_NAME"
 
+  log "using env file $ENV_FILE"
   build_image
 
   local backup_name=""
