@@ -29,7 +29,7 @@ RUN find src -type f -exec touch {} + \
 FROM ${RUNTIME_IMAGE} AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
