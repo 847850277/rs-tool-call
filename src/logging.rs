@@ -25,7 +25,7 @@ pub fn log_llm_request(
     if let Some(p) = phase {
         entry["phase"] = json!(p);
     }
-    info!("\n{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
+    info!("{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
 }
 
 /// Log a full LLM response as pretty-printed JSON.
@@ -44,7 +44,7 @@ pub fn log_llm_response(
     if let Some(p) = phase {
         entry["phase"] = json!(p);
     }
-    info!("\n{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
+    info!("{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
 }
 
 /// Log a chain step where the engine chose to return a final answer.
@@ -62,7 +62,7 @@ pub fn log_chain_step_answer(
         "text": text,
         "selection_reason": selection_reason,
     });
-    info!("\n{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
+    info!("{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
 }
 
 /// Log a chain step where the engine chose to ask the user for clarification.
@@ -80,7 +80,7 @@ pub fn log_chain_step_ask_user(
         "question": question,
         "selection_reason": selection_reason,
     });
-    info!("\n{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
+    info!("{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
 }
 
 /// Log a chain step where the engine dispatched a tool call.
@@ -104,5 +104,5 @@ pub fn log_chain_step_tool(
         "output": output,
         "selection_reason": selection_reason,
     });
-    info!("\n{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
+    info!("{}", serde_json::to_string_pretty(&entry).unwrap_or_default());
 }

@@ -71,6 +71,7 @@ fn init_tracing() {
     fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .without_time()
         .compact()
         .init();
 }
