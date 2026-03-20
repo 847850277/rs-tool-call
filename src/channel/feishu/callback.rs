@@ -1,3 +1,5 @@
+//! 飞书回调处理模块，负责解密、验签以及基础事件类型提取。
+
 use aes::Aes256;
 use anyhow::{Result, anyhow};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
@@ -10,12 +12,14 @@ use crate::config::FeishuCallbackConfig;
 
 type Aes256CbcDec = Decryptor<Aes256>;
 
+/// 飞书回调错误类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeishuCallbackErrorKind {
     BadRequest,
     Unauthorized,
 }
 
+/// 飞书回调处理过程中的统一错误结构。
 #[derive(Debug, Clone)]
 pub struct FeishuCallbackError {
     pub kind: FeishuCallbackErrorKind,
@@ -23,6 +27,7 @@ pub struct FeishuCallbackError {
 }
 
 impl FeishuCallbackError {
+    /// 构造 400 类回调错误。
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             kind: FeishuCallbackErrorKind::BadRequest,
@@ -30,6 +35,7 @@ impl FeishuCallbackError {
         }
     }
 
+    /// 构造 401 类回调错误。
     fn unauthorized(message: impl Into<String>) -> Self {
         Self {
             kind: FeishuCallbackErrorKind::Unauthorized,
@@ -38,6 +44,7 @@ impl FeishuCallbackError {
     }
 }
 
+/// 飞书回调被解析后的统一结果。
 #[derive(Debug)]
 pub struct FeishuCallbackOutcome {
     pub payload: Value,
@@ -45,6 +52,7 @@ pub struct FeishuCallbackOutcome {
     pub encrypted: bool,
 }
 
+/// 处理飞书回调原始 JSON，完成解密、token 校验和 challenge/普通回调响应生成。
 pub fn process_callback(
     raw_body: Value,
     config: &FeishuCallbackConfig,
@@ -87,6 +95,7 @@ pub fn process_callback(
     })
 }
 
+/// 从飞书回调负载中提取事件类型字段。
 pub fn extract_event_type(payload: &Value) -> Option<&str> {
     payload
         .pointer("/header/event_type")
@@ -95,6 +104,7 @@ pub fn extract_event_type(payload: &Value) -> Option<&str> {
         .or_else(|| payload.get("type").and_then(Value::as_str))
 }
 
+/// 校验飞书回调中的 verification token。
 fn validate_verification_token(
     payload: &Value,
     expected_token: Option<&str>,
@@ -122,6 +132,7 @@ fn validate_verification_token(
     Ok(())
 }
 
+/// 使用飞书加密 key 解密 `encrypt` 字段中的回调负载。
 fn decrypt_payload(encrypt: &str, encrypt_key: &str) -> Result<Value> {
     let decoded = BASE64
         .decode(encrypt)

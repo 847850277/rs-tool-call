@@ -1,12 +1,14 @@
+//! 程序入口模块，负责初始化配置、构建依赖并启动 HTTP 服务。
+
+mod capability;
+mod channel;
 mod config;
 mod engine;
-mod feishu_bot;
-mod feishu_callback;
-mod http_api;
 mod logging;
 mod models;
 mod session_store;
 mod tools;
+mod web;
 
 use std::sync::Arc;
 
@@ -14,20 +16,23 @@ use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::{
+    capability::CapabilityHub,
     config::AppConfig,
     engine::ToolCallEngine,
-    http_api::{AppState, run_http},
     models::build_llm,
     session_store::SessionStore,
     tools::build_builtin_registry,
+    web::{AppState, run_http},
 };
 
 #[tokio::main]
+/// 初始化应用主流程并启动服务。
 async fn main() -> Result<()> {
     init_tracing();
 
     let config = AppConfig::from_env()?;
     let llm = build_llm(&config.llm)?;
+    let extraction_llm = llm.clone();
     let session_store = SessionStore::default();
     let registry = build_builtin_registry(session_store.clone(), config.exec_command_tool.clone())?;
     let engine = Arc::new(ToolCallEngine::new(
@@ -38,33 +43,35 @@ async fn main() -> Result<()> {
         config.default_system_prompt.clone(),
         config.max_iterations,
     ));
+    let capabilities = CapabilityHub::new(engine, extraction_llm);
 
-    tracing::info!(
-        server_addr = %config.server_addr,
-        provider = %config.llm.provider.as_str(),
-        model = %config.llm.model,
-        "starting tool-call service"
+    logging::log_service_startup(
+        &config.server_addr,
+        config.llm.provider.as_str(),
+        &config.llm.model,
     );
-    tracing::info!(
-        feishu_open_base_url = %config.feishu_callback.open_base_url,
-        feishu_verification_token_configured = config.feishu_callback.verification_token.is_some(),
-        feishu_encrypt_key_configured = config.feishu_callback.encrypt_key.is_some(),
-        feishu_app_id_configured = config.feishu_callback.app_id.is_some(),
-        feishu_app_secret_configured = config.feishu_callback.app_secret.is_some(),
-        feishu_require_mention = config.feishu_callback.require_mention,
-        exec_command_tool_enabled = config.exec_command_tool.enabled,
-        exec_command_tool_shell = %config.exec_command_tool.shell,
-        "loaded feishu integration config"
+    logging::log_feishu_integration_config(
+        &config.feishu_callback.open_base_url,
+        config.feishu_callback.verification_token.is_some(),
+        config.feishu_callback.encrypt_key.is_some(),
+        config.feishu_callback.app_id.is_some(),
+        config.feishu_callback.app_secret.is_some(),
+        config.feishu_callback.require_mention,
+        config.exec_command_tool.enabled,
+        &config.exec_command_tool.shell,
     );
     if config.feishu_callback.app_id.is_none() || config.feishu_callback.app_secret.is_none() {
-        tracing::warn!(
-            "feishu message reply is disabled because FEISHU_APP_ID or FEISHU_APP_SECRET is missing"
-        );
+        logging::log_feishu_reply_disabled();
     }
 
-    run_http(Arc::new(AppState { config, engine })).await
+    run_http(Arc::new(AppState {
+        config,
+        capabilities,
+    }))
+    .await
 }
 
+/// 初始化全局 tracing 日志配置。
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,rs_tool_call=debug"));

@@ -1,29 +1,19 @@
+//! 飞书 IM 模块，负责文本消息事件解析、消息清洗以及回复 API 调用。
+
 use anyhow::{Result, anyhow, bail};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracing::info;
 
-use crate::config::FeishuCallbackConfig;
+use crate::{
+    channel::{ChannelKind, InboundMessageParseOutcome, InboundTextMessage, OutboundTextReply},
+    config::FeishuCallbackConfig,
+    logging,
+};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FeishuTextMessageEvent {
-    pub event_id: Option<String>,
-    pub message_id: String,
-    pub chat_id: Option<String>,
-    pub chat_type: Option<String>,
-    pub user_id: String,
-    pub session_id: String,
-    pub text: String,
-}
+use super::callback::extract_event_type;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FeishuMessageEventParseOutcome {
-    NotMessageEvent,
-    Ignored { reason: &'static str },
-    Text(FeishuTextMessageEvent),
-}
-
+/// 飞书机器人客户端，负责获取 tenant token 并回复消息。
 #[derive(Clone)]
 pub struct FeishuBotClient {
     http: Client,
@@ -44,6 +34,7 @@ struct FeishuApiResponse {
 }
 
 impl FeishuBotClient {
+    /// 创建一个飞书机器人客户端实例。
     pub fn new(config: FeishuCallbackConfig) -> Self {
         Self {
             http: Client::new(),
@@ -51,22 +42,26 @@ impl FeishuBotClient {
         }
     }
 
-    pub async fn reply_text(&self, message_id: &str, text: &str) -> Result<()> {
-        let formatted = format_reply_text_for_feishu(text);
-        info!(
-            message_id = %message_id,
-            reply_preview = %preview_text(&formatted, 160),
-            "requesting feishu tenant access token before replying"
+    /// 发送统一出站文本回复，内部会自动完成 access token 获取和文本格式整理。
+    pub async fn send_text_reply(&self, reply: &OutboundTextReply) -> Result<()> {
+        let formatted = format_reply_text_for_feishu(&reply.text);
+        logging::log_channel_reply_stage(
+            reply.channel.as_str(),
+            &reply.reply_to_message_id,
+            "tenant_access_token",
+            &formatted,
         );
         let token = self.tenant_access_token().await?;
         let url = format!(
-            "{}/open-apis/im/v1/messages/{message_id}/reply",
-            self.config.open_base_url.trim_end_matches('/')
+            "{}/open-apis/im/v1/messages/{}/reply",
+            self.config.open_base_url.trim_end_matches('/'),
+            reply.reply_to_message_id
         );
-        info!(
-            message_id = %message_id,
-            reply_preview = %preview_text(&formatted, 160),
-            "calling feishu reply api"
+        logging::log_channel_reply_stage(
+            reply.channel.as_str(),
+            &reply.reply_to_message_id,
+            "reply_api",
+            &formatted,
         );
         let response = self
             .http
@@ -94,10 +89,11 @@ impl FeishuBotClient {
                 payload.msg.unwrap_or_else(|| "unknown error".to_string())
             );
         }
-        info!(message_id = %message_id, "feishu reply api returned success");
+        logging::log_channel_reply_success(reply.channel.as_str(), &reply.reply_to_message_id);
         Ok(())
     }
 
+    /// 获取飞书租户访问令牌。
     async fn tenant_access_token(&self) -> Result<String> {
         let app_id = self
             .config
@@ -149,15 +145,13 @@ impl FeishuBotClient {
     }
 }
 
+/// 将飞书回调负载解析成统一的入站文本消息模型。
 pub fn parse_message_event(
     payload: &Value,
     config: &FeishuCallbackConfig,
-) -> Result<FeishuMessageEventParseOutcome> {
-    if !matches!(
-        super::feishu_callback::extract_event_type(payload),
-        Some("im.message.receive_v1")
-    ) {
-        return Ok(FeishuMessageEventParseOutcome::NotMessageEvent);
+) -> Result<InboundMessageParseOutcome> {
+    if !matches!(extract_event_type(payload), Some("im.message.receive_v1")) {
+        return Ok(InboundMessageParseOutcome::NotMessageEvent);
     }
 
     if payload
@@ -165,7 +159,7 @@ pub fn parse_message_event(
         .and_then(Value::as_str)
         == Some("app")
     {
-        return Ok(FeishuMessageEventParseOutcome::Ignored {
+        return Ok(InboundMessageParseOutcome::Ignored {
             reason: "ignore app-originated message event",
         });
     }
@@ -175,7 +169,7 @@ pub fn parse_message_event(
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing /event/message/message_type"))?;
     if message_type != "text" {
-        return Ok(FeishuMessageEventParseOutcome::Ignored {
+        return Ok(InboundMessageParseOutcome::Ignored {
             reason: "ignore non-text message event",
         });
     }
@@ -221,7 +215,7 @@ pub fn parse_message_event(
             .map(|mentions| !mentions.is_empty())
             .unwrap_or(false)
     {
-        return Ok(FeishuMessageEventParseOutcome::Ignored {
+        return Ok(InboundMessageParseOutcome::Ignored {
             reason: "ignore group message without bot mention",
         });
     }
@@ -238,19 +232,19 @@ pub fn parse_message_event(
     )?;
     let session_seed = chat_id.clone().unwrap_or_else(|| message_id.clone());
 
-    Ok(FeishuMessageEventParseOutcome::Text(
-        FeishuTextMessageEvent {
-            event_id,
-            message_id,
-            chat_id,
-            chat_type,
-            user_id,
-            session_id: format!("feishu:{session_seed}"),
-            text,
-        },
-    ))
+    Ok(InboundMessageParseOutcome::Text(InboundTextMessage {
+        channel: ChannelKind::Feishu,
+        event_id,
+        message_id,
+        chat_id,
+        chat_type,
+        user_id,
+        session_id: format!("feishu:{session_seed}"),
+        text,
+    }))
 }
 
+/// 解析飞书文本消息内容，并移除 mention key 等噪声。
 fn parse_text_message_content(content_raw: &str, mentions: Option<&Vec<Value>>) -> Result<String> {
     let content: Value = serde_json::from_str(content_raw)
         .map_err(|error| anyhow!("invalid feishu text message content JSON: {error}"))?;
@@ -274,6 +268,7 @@ fn parse_text_message_content(content_raw: &str, mentions: Option<&Vec<Value>>) 
     Ok(text)
 }
 
+/// 构造飞书文本回复请求体。
 fn build_reply_request(text: &str) -> Value {
     json!({
         "content": json!({ "text": text }).to_string(),
@@ -281,6 +276,7 @@ fn build_reply_request(text: &str) -> Value {
     })
 }
 
+/// 把模型回复整理成更适合飞书 IM 展示的纯文本格式。
 fn format_reply_text_for_feishu(input: &str) -> String {
     let mut text = input.replace("\r\n", "\n");
     text = text.replace("**", "");
@@ -310,15 +306,6 @@ fn format_reply_text_for_feishu(input: &str) -> String {
     }
 }
 
-fn preview_text(input: &str, limit: usize) -> String {
-    let mut preview = input.trim().replace('\n', "\\n");
-    if preview.chars().count() > limit {
-        preview = preview.chars().take(limit).collect::<String>();
-        preview.push_str("...");
-    }
-    preview
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,7 +329,7 @@ mod tests {
                     "message_id": "om_123",
                     "chat_id": "oc_456",
                     "chat_type": "group",
-                "message_type": "text",
+                    "message_type": "text",
                     "mentions": [
                         { "key": "@_user_1" }
                     ],
@@ -361,7 +348,8 @@ mod tests {
         .expect("parse should succeed");
 
         match event {
-            FeishuMessageEventParseOutcome::Text(event) => {
+            InboundMessageParseOutcome::Text(event) => {
+                assert_eq!(event.channel, ChannelKind::Feishu);
                 assert_eq!(event.message_id, "om_123");
                 assert_eq!(event.user_id, "ou_xxx");
                 assert_eq!(event.session_id, "feishu:oc_456");
@@ -407,7 +395,7 @@ mod tests {
         .expect("parse should succeed");
 
         match event {
-            FeishuMessageEventParseOutcome::Text(event) => {
+            InboundMessageParseOutcome::Text(event) => {
                 assert_eq!(event.text, "我是谁");
             }
             other => panic!("unexpected outcome: {other:?}"),
@@ -446,7 +434,7 @@ mod tests {
         .expect("parse should succeed");
         assert_eq!(
             outcome,
-            FeishuMessageEventParseOutcome::Ignored {
+            InboundMessageParseOutcome::Ignored {
                 reason: "ignore group message without bot mention",
             }
         );
