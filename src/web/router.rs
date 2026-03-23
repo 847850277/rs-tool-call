@@ -9,9 +9,10 @@ use salvo::{
 };
 
 use super::{
+    cors::CorsHandler,
     handlers::{
-        chat, extract_form, feishu_callback, health, invoke_tool, list_sessions, list_tools,
-        session_history, translate_media,
+        chat, cors_preflight, extract_form, feishu_callback, health, invoke_tool, list_sessions,
+        list_tools, session_history, translate_media,
     },
     state::{AppState, StateInjector},
 };
@@ -29,23 +30,54 @@ pub async fn run_http(state: Arc<AppState>) -> Result<()> {
 /// 构建应用的全部 HTTP 路由树。
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
+        .hoop(CorsHandler)
         .hoop(StateInjector { state })
-        .push(Router::with_path("health").get(health))
+        .push(
+            Router::with_path("health")
+                .options(cors_preflight)
+                .get(health),
+        )
         .push(
             Router::with_path("feishu/callback")
+                .options(cors_preflight)
                 .get(feishu_callback)
                 .post(feishu_callback),
         )
         .push(
             Router::with_path("api/feishu/callback")
+                .options(cors_preflight)
                 .get(feishu_callback)
                 .post(feishu_callback),
         )
-        .push(Router::with_path("tools").get(list_tools))
-        .push(Router::with_path("tools/invoke").post(invoke_tool))
-        .push(Router::with_path("chat").post(chat))
-        .push(Router::with_path("extract/form").post(extract_form))
-        .push(Router::with_path("translate/media").post(translate_media))
-        .push(Router::with_path("sessions").get(list_sessions))
-        .push(Router::with_path("sessions/{session_id}/history").get(session_history))
+        .push(
+            Router::with_path("tools")
+                .options(cors_preflight)
+                .get(list_tools),
+        )
+        .push(
+            Router::with_path("tools/invoke")
+                .options(cors_preflight)
+                .post(invoke_tool),
+        )
+        .push(Router::with_path("chat").options(cors_preflight).post(chat))
+        .push(
+            Router::with_path("extract/form")
+                .options(cors_preflight)
+                .post(extract_form),
+        )
+        .push(
+            Router::with_path("translate/media")
+                .options(cors_preflight)
+                .post(translate_media),
+        )
+        .push(
+            Router::with_path("sessions")
+                .options(cors_preflight)
+                .get(list_sessions),
+        )
+        .push(
+            Router::with_path("sessions/{session_id}/history")
+                .options(cors_preflight)
+                .get(session_history),
+        )
 }

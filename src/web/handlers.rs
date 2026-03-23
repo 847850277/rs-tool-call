@@ -45,6 +45,12 @@ pub(crate) async fn health(depot: &mut Depot, res: &mut Response) {
     }));
 }
 
+/// 处理浏览器的 CORS 预检请求。
+#[handler]
+pub(crate) async fn cors_preflight(res: &mut Response) {
+    res.status_code(StatusCode::NO_CONTENT);
+}
+
 /// 处理飞书回调请求，并在识别到文本消息时转交给飞书通道服务。
 #[handler]
 pub(crate) async fn feishu_callback(req: &mut Request, depot: &mut Depot, res: &mut Response) {
