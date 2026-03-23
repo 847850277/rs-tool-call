@@ -3,17 +3,13 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Serialize;
+use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-
-/// 本地表单仓库，按 `form_id -> markdown 文件` 的方式解析表单定义。
-#[derive(Debug, Clone)]
-pub struct FormCatalog {
-    markdown_dir: PathBuf,
-}
 
 /// 单个表单的解析结果。
 #[derive(Debug, Clone)]
@@ -40,14 +36,27 @@ pub struct FormValidationReport {
     pub warnings: Vec<String>,
 }
 
-impl FormCatalog {
+/// 表单定义存储接口，负责根据 `form_id` 返回统一的表单定义对象。
+pub trait FormDefinitionStore: Send + Sync {
+    fn load(&self, form_id: &str) -> Result<FormDefinition>;
+}
+
+/// 本地 Markdown 表单仓库，按 `form_id -> markdown 文件` 的方式解析表单定义。
+#[derive(Debug, Clone)]
+pub struct MarkdownFormStore {
+    markdown_dir: PathBuf,
+}
+
+impl MarkdownFormStore {
     /// 基于本地 Markdown 目录创建表单仓库。
     pub fn new(markdown_dir: PathBuf) -> Self {
         Self { markdown_dir }
     }
+}
 
+impl FormDefinitionStore for MarkdownFormStore {
     /// 根据 `form_id` 读取并解析对应 Markdown 表单。
-    pub fn load(&self, form_id: &str) -> Result<FormDefinition> {
+    fn load(&self, form_id: &str) -> Result<FormDefinition> {
         if !is_valid_form_id(form_id) {
             bail!("invalid form_id: only letters, digits, '-' and '_' are allowed");
         }
@@ -59,6 +68,73 @@ impl FormCatalog {
         parse_form_markdown(form_id, &path, &markdown)
     }
 }
+
+/// 基于 HTTP 的 mock 表单仓库。
+/// 该实现用于演示或联调场景：按 `GET {base_url}/{form_id}` 拉取 JSON 表单定义。
+/// 为了尽量少改当前架构，这里使用阻塞 HTTP 客户端；如果未来进入生产主链路，建议改成异步 store。
+#[derive(Debug, Clone)]
+pub struct MockHttpFormStore {
+    base_url: String,
+    client: Client,
+}
+
+#[derive(Debug, Deserialize)]
+struct MockHttpFormDefinitionPayload {
+    #[serde(default)]
+    form_id: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    instructions: Option<String>,
+    #[serde(default)]
+    source_path: Option<String>,
+    #[serde(default)]
+    schema: Option<Value>,
+}
+
+impl MockHttpFormStore {
+    /// 基于远程基础地址创建 mock HTTP 表单仓库。
+    /// 例如 `http://127.0.0.1:9000/mock/forms`，实际读取 `http://127.0.0.1:9000/mock/forms/basic_profile`。
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            client: Client::new(),
+        }
+    }
+
+    fn form_url(&self, form_id: &str) -> String {
+        format!("{}/{}", self.base_url.trim_end_matches('/'), form_id)
+    }
+}
+
+impl FormDefinitionStore for MockHttpFormStore {
+    /// 根据 `form_id` 通过 HTTP 拉取远程 JSON 表单定义。
+    fn load(&self, form_id: &str) -> Result<FormDefinition> {
+        if !is_valid_form_id(form_id) {
+            bail!("invalid form_id: only letters, digits, '-' and '_' are allowed");
+        }
+
+        let url = self.form_url(form_id);
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .with_context(|| format!("failed to fetch remote form definition: {url}"))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .context("failed to read remote form definition body")?;
+
+        if !status.is_success() {
+            bail!("remote form definition request failed with status {status}: {body}");
+        }
+
+        parse_mock_http_form_definition(form_id, &url, &body)
+    }
+}
+
+/// 用于在应用状态里持有统一的表单定义存储对象。
+pub type SharedFormDefinitionStore = Arc<dyn FormDefinitionStore>;
 
 /// 按表单 schema 校验抽取后的 JSON 数据。
 pub fn validate_form_data(schema: &Value, data: &Value) -> FormValidationReport {
@@ -95,6 +171,36 @@ fn parse_form_markdown(
         instructions,
         schema,
         source_path: source_path.to_path_buf(),
+    })
+}
+
+fn parse_mock_http_form_definition(form_id: &str, url: &str, body: &str) -> Result<FormDefinition> {
+    let payload = serde_json::from_str::<MockHttpFormDefinitionPayload>(body)
+        .context("failed to parse remote form definition payload as JSON object")?;
+    let schema = if let Some(schema) = payload.schema {
+        schema
+    } else {
+        let fallback = serde_json::from_str::<Value>(body)
+            .context("failed to parse remote form definition as raw schema JSON")?;
+        if fallback.get("type").is_some() || fallback.get("properties").is_some() {
+            fallback
+        } else {
+            bail!(
+                "remote form definition payload must contain a `schema` field or be a raw JSON schema object"
+            );
+        }
+    };
+
+    Ok(FormDefinition {
+        form_id: payload.form_id.unwrap_or_else(|| form_id.to_string()),
+        title: payload.title,
+        instructions: payload.instructions,
+        schema,
+        source_path: PathBuf::from(
+            payload
+                .source_path
+                .unwrap_or_else(|| format!("mock-http://{url}")),
+        ),
     })
 }
 
@@ -627,6 +733,65 @@ mod tests {
                 .invalid_fields
                 .iter()
                 .any(|issue| issue.field == "phone")
+        );
+    }
+
+    #[test]
+    fn parses_mock_http_form_definition_payload() {
+        let payload = r#"{
+            "title": "远程基础档案",
+            "instructions": "没有明确值时返回 null",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" }
+                },
+                "required": ["name"]
+            }
+        }"#;
+
+        let definition = parse_mock_http_form_definition(
+            "basic_profile",
+            "http://127.0.0.1:9000/mock/forms/basic_profile",
+            payload,
+        )
+        .expect("http payload should parse");
+
+        assert_eq!(definition.form_id, "basic_profile");
+        assert_eq!(definition.title.as_deref(), Some("远程基础档案"));
+        assert_eq!(
+            definition.instructions.as_deref(),
+            Some("没有明确值时返回 null")
+        );
+        assert_eq!(definition.schema["required"][0], "name");
+    }
+
+    #[test]
+    fn parses_mock_http_raw_schema_payload() {
+        let payload = r#"{
+            "type": "object",
+            "properties": {
+                "phone": { "type": "string" }
+            }
+        }"#;
+
+        let definition = parse_mock_http_form_definition(
+            "remote_profile",
+            "http://127.0.0.1:9000/mock/forms/remote_profile",
+            payload,
+        )
+        .expect("raw schema payload should parse");
+
+        assert_eq!(definition.form_id, "remote_profile");
+        assert_eq!(definition.schema["properties"]["phone"]["type"], "string");
+    }
+
+    #[test]
+    fn builds_mock_http_form_url() {
+        let store = MockHttpFormStore::new("http://127.0.0.1:9000/mock/forms/");
+        assert_eq!(
+            store.form_url("basic_profile"),
+            "http://127.0.0.1:9000/mock/forms/basic_profile"
         );
     }
 }

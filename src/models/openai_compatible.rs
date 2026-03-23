@@ -16,5 +16,6 @@ pub(crate) fn build_openai_compatible_llm(config: &LlmConfig) -> Result<Arc<dyn 
         organization_id: None,
         project_id: None,
         base_url: config.base_url.clone(),
+        reasoning_effort: None,
     })?))
 }

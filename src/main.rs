@@ -20,7 +20,7 @@ use crate::{
     capability::CapabilityHub,
     config::AppConfig,
     engine::ToolCallEngine,
-    forms::FormCatalog,
+    forms::{MarkdownFormStore, SharedFormDefinitionStore},
     models::build_llm,
     session_store::SessionStore,
     tools::build_builtin_registry,
@@ -35,7 +35,8 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env()?;
     let llm = build_llm(&config.llm)?;
     let extraction_llm = llm.clone();
-    let form_catalog = FormCatalog::new(config.forms.markdown_dir.clone());
+    let form_store: SharedFormDefinitionStore =
+        Arc::new(MarkdownFormStore::new(config.forms.markdown_dir.clone()));
     let session_store = SessionStore::default();
     let registry = build_builtin_registry(session_store.clone(), config.exec_command_tool.clone())?;
     let engine = Arc::new(ToolCallEngine::new(
@@ -70,7 +71,7 @@ async fn main() -> Result<()> {
     run_http(Arc::new(AppState {
         config,
         capabilities,
-        form_catalog,
+        form_store,
     }))
     .await
 }

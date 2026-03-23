@@ -168,7 +168,7 @@ curl -s http://127.0.0.1:7878/chat \
   -H 'content-type: application/json' \
   -d '{
     "session_id": "main",
-    "message": "帮我调用 math_add 计算 19 + 23，然后告诉我结果"
+    "message": "获取一下成都的天气"
   }'
 ```
 

@@ -336,7 +336,7 @@ pub(crate) async fn extract_form(req: &mut Request, depot: &mut Depot, res: &mut
     let state = app_state(depot);
     let mut warnings = Vec::new();
     let resolved_form = if let Some(form_id) = body.form_id.as_deref() {
-        match state.form_catalog.load(form_id) {
+        match state.form_store.load(form_id) {
             Ok(form) => {
                 debug!(
                     form_id = %form.form_id,

@@ -105,11 +105,14 @@ impl From<&Content> for MessageView {
 
         for part in &value.parts {
             match part {
+                Part::Thinking { thinking, .. } => {
+                    lines.push(format!("[thinking] {thinking}"));
+                }
                 Part::Text { text } => {
                     saw_text = true;
                     lines.push(text.clone());
                 }
-                Part::FunctionCall { name, args, id } => {
+                Part::FunctionCall { name, args, id, .. } => {
                     saw_tool_call = true;
                     let args_text =
                         serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string());

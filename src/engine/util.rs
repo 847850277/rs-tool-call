@@ -14,6 +14,7 @@ pub(crate) fn build_model_tool_call_content(function_call: &FunctionCallEnvelope
             name: function_call.name.clone(),
             args: function_call.args.clone(),
             id: Some(function_call.function_call_id.clone()),
+            thought_signature: None,
         }],
     }
 }
@@ -56,7 +57,7 @@ pub(crate) fn extract_function_calls(content: &Content) -> Vec<FunctionCallEnvel
         .iter()
         .enumerate()
         .filter_map(|(index, part)| match part {
-            Part::FunctionCall { name, args, id } => Some(FunctionCallEnvelope {
+            Part::FunctionCall { name, args, id, .. } => Some(FunctionCallEnvelope {
                 function_call_id: id
                     .clone()
                     .unwrap_or_else(|| format!("call-{}-{index}", Uuid::new_v4())),
