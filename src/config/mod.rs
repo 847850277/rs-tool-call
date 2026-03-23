@@ -6,10 +6,12 @@ mod channel;
 mod env;
 mod form;
 mod llm;
+mod media;
 mod tool;
 
 pub use app::AppConfig;
 pub use channel::FeishuCallbackConfig;
 pub use form::FormConfig;
 pub use llm::{LlmConfig, LlmProvider};
+pub use media::MediaTranslateConfig;
 pub use tool::ExecCommandToolConfig;

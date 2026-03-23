@@ -9,7 +9,11 @@ use serde_json::{Map, Value};
 use tracing::debug;
 
 use crate::{
-    capability::{ConversationRequest, DirectToolInvocationRequest, StructuredExtractionRequest},
+    capability::{
+        ConversationRequest, DirectToolInvocationRequest, MediaTranslateAudioOutput,
+        MediaTranslateInput, MediaTranslateRequest as CapabilityMediaTranslateRequest,
+        StructuredExtractionRequest,
+    },
     channel::InboundMessageParseOutcome,
     channel::feishu::{
         FeishuCallbackErrorKind, callback_ack, extract_event_type, handle_text_message_event,
@@ -23,7 +27,8 @@ use super::{
     state::app_state,
     types::{
         ChatRequest, FormExtractRequest, FormExtractResponse, FormInvalidFieldResponse,
-        HealthResponse, ToolInvokeRequest, ToolInvokeResponse,
+        HealthResponse, MediaTranslateRequest, MediaTranslateResponse, ToolInvokeRequest,
+        ToolInvokeResponse,
     },
     util::{merge_action_into_args, render_error},
 };
@@ -438,6 +443,112 @@ pub(crate) async fn extract_form(req: &mut Request, depot: &mut Depot, res: &mut
                 res,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "form_extraction_failed",
+                &error.to_string(),
+            );
+        }
+    }
+}
+
+/// 处理媒体翻译请求，独立调用阿里百炼媒体翻译接口。
+#[handler]
+pub(crate) async fn translate_media(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    let body = match req.parse_json::<MediaTranslateRequest>().await {
+        Ok(value) => value,
+        Err(error) => {
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                &error.to_string(),
+            );
+            return;
+        }
+    };
+
+    let input = match (body.audio, body.video_url) {
+        (Some(audio), None) => {
+            logging::log_http_media_translate_request(
+                "audio",
+                body.source_lang.as_deref(),
+                &body.target_lang,
+                body.output_audio.is_some(),
+            );
+            MediaTranslateInput::Audio {
+                data: audio.data,
+                format: audio.format,
+            }
+        }
+        (None, Some(video_url)) => {
+            logging::log_http_media_translate_request(
+                "video",
+                body.source_lang.as_deref(),
+                &body.target_lang,
+                body.output_audio.is_some(),
+            );
+            MediaTranslateInput::VideoUrl { url: video_url }
+        }
+        (Some(_), Some(_)) => {
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "provide either audio or video_url, not both",
+            );
+            return;
+        }
+        (None, None) => {
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "either audio or video_url must be provided",
+            );
+            return;
+        }
+    };
+
+    let state = app_state(depot);
+    match state
+        .capabilities
+        .media_translate()
+        .execute(CapabilityMediaTranslateRequest {
+            source_lang: body.source_lang.clone(),
+            target_lang: body.target_lang.clone(),
+            input,
+            output_audio: body.output_audio.map(|audio| MediaTranslateAudioOutput {
+                format: audio.format,
+                voice: audio.voice,
+            }),
+            include_usage: body.include_usage,
+        })
+        .await
+    {
+        Ok(output) => {
+            logging::log_http_media_translate_complete(
+                &output.model,
+                &output.translated_text,
+                output.audio_base64.is_some(),
+                output.finish_reason.as_deref(),
+            );
+            res.render(Json(MediaTranslateResponse {
+                ok: true,
+                model: output.model,
+                request_id: output.request_id,
+                finish_reason: output.finish_reason,
+                source_lang: body.source_lang,
+                target_lang: body.target_lang,
+                translated_text: output.translated_text,
+                audio_base64: output.audio_base64,
+                audio_id: output.audio_id,
+                usage: output.usage,
+            }));
+        }
+        Err(error) => {
+            logging::log_http_media_translate_failed(&error.to_string());
+            render_error(
+                res,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "media_translate_failed",
                 &error.to_string(),
             );
         }

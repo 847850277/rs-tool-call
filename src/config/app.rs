@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{
     ExecCommandToolConfig, FeishuCallbackConfig, FormConfig, LlmConfig, LlmProvider,
+    MediaTranslateConfig,
     env::{first_env, parse_bool_env, parse_u64_env, parse_usize_env},
 };
 
@@ -18,6 +19,7 @@ pub struct AppConfig {
     pub max_iterations: usize,
     pub llm: LlmConfig,
     pub forms: FormConfig,
+    pub media_translate: MediaTranslateConfig,
     pub feishu_callback: FeishuCallbackConfig,
     pub exec_command_tool: ExecCommandToolConfig,
 }
@@ -64,6 +66,23 @@ impl AppConfig {
                     std::env::var("FORM_MARKDOWN_DIR")
                         .unwrap_or_else(|_| "./forms".to_string()),
                 ),
+            },
+            media_translate: MediaTranslateConfig {
+                api_key: first_env(&[
+                    "MEDIA_TRANSLATE_API_KEY",
+                    "DASHSCOPE_API_KEY",
+                    "BAILIAN_API_KEY",
+                    "GLM_API_KEY",
+                ]),
+                base_url: first_env(&[
+                    "MEDIA_TRANSLATE_BASE_URL",
+                    "DASHSCOPE_BASE_URL",
+                    "BAILIAN_BASE_URL",
+                    "GLM_BASE_URL",
+                ])
+                .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
+                model: std::env::var("MEDIA_TRANSLATE_MODEL")
+                    .unwrap_or_else(|_| "qwen3-livetranslate-flash".to_string()),
             },
             feishu_callback: FeishuCallbackConfig {
                 verification_token: first_env(&[

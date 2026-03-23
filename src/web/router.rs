@@ -11,7 +11,7 @@ use salvo::{
 use super::{
     handlers::{
         chat, extract_form, feishu_callback, health, invoke_tool, list_sessions, list_tools,
-        session_history,
+        session_history, translate_media,
     },
     state::{AppState, StateInjector},
 };
@@ -45,6 +45,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .push(Router::with_path("tools/invoke").post(invoke_tool))
         .push(Router::with_path("chat").post(chat))
         .push(Router::with_path("extract/form").post(extract_form))
+        .push(Router::with_path("translate/media").post(translate_media))
         .push(Router::with_path("sessions").get(list_sessions))
         .push(Router::with_path("sessions/{session_id}/history").get(session_history))
 }

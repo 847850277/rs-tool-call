@@ -45,6 +45,36 @@ pub(crate) struct FormExtractRequest {
     pub(crate) instructions: Option<String>,
 }
 
+/// 媒体翻译接口中的音频输入结构。
+#[derive(Debug, Deserialize)]
+pub(crate) struct MediaTranslateAudioInputRequest {
+    pub(crate) data: String,
+    pub(crate) format: String,
+}
+
+/// 媒体翻译接口中的音频输出结构。
+#[derive(Debug, Deserialize)]
+pub(crate) struct MediaTranslateAudioOutputRequest {
+    pub(crate) format: String,
+    pub(crate) voice: String,
+}
+
+/// `/translate/media` 接口的请求体。
+#[derive(Debug, Deserialize)]
+pub(crate) struct MediaTranslateRequest {
+    #[serde(default)]
+    pub(crate) source_lang: Option<String>,
+    pub(crate) target_lang: String,
+    #[serde(default)]
+    pub(crate) audio: Option<MediaTranslateAudioInputRequest>,
+    #[serde(default)]
+    pub(crate) video_url: Option<String>,
+    #[serde(default)]
+    pub(crate) output_audio: Option<MediaTranslateAudioOutputRequest>,
+    #[serde(default = "default_include_usage")]
+    pub(crate) include_usage: bool,
+}
+
 /// 错误响应外层结构。
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorBody {
@@ -87,6 +117,21 @@ pub(crate) struct FormExtractResponse {
     pub(crate) warnings: Vec<String>,
 }
 
+/// `/translate/media` 接口的成功响应体。
+#[derive(Debug, Serialize)]
+pub(crate) struct MediaTranslateResponse {
+    pub(crate) ok: bool,
+    pub(crate) model: String,
+    pub(crate) request_id: Option<String>,
+    pub(crate) finish_reason: Option<String>,
+    pub(crate) source_lang: Option<String>,
+    pub(crate) target_lang: String,
+    pub(crate) translated_text: String,
+    pub(crate) audio_base64: Option<String>,
+    pub(crate) audio_id: Option<String>,
+    pub(crate) usage: Option<Value>,
+}
+
 /// 健康检查接口的响应体。
 #[derive(Debug, Serialize)]
 pub(crate) struct HealthResponse {
@@ -113,5 +158,10 @@ fn default_user_id() -> String {
 
 /// 生成默认的会话持久化开关值。
 fn default_persist() -> bool {
+    true
+}
+
+/// 生成默认的 usage 输出开关值。
+fn default_include_usage() -> bool {
     true
 }

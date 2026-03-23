@@ -90,6 +90,43 @@ pub fn log_http_form_extract_failed(form_id: Option<&str>, error_message: &str) 
     );
 }
 
+/// 记录 `/translate/media` 请求的入口信息。
+pub fn log_http_media_translate_request(
+    media_kind: &'static str,
+    source_lang: Option<&str>,
+    target_lang: &str,
+    output_audio: bool,
+) {
+    info!(
+        media_kind,
+        source_lang = ?source_lang,
+        target_lang = %target_lang,
+        output_audio,
+        "received media translate request"
+    );
+}
+
+/// 记录 `/translate/media` 请求成功完成时的摘要信息。
+pub fn log_http_media_translate_complete(
+    model: &str,
+    translated_text: &str,
+    audio_included: bool,
+    finish_reason: Option<&str>,
+) {
+    info!(
+        model = %model,
+        translated_text_preview = %preview_text(translated_text, 200),
+        audio_included,
+        finish_reason = ?finish_reason,
+        "completed media translate request"
+    );
+}
+
+/// 记录 `/translate/media` 请求失败的情况。
+pub fn log_http_media_translate_failed(error_message: &str) {
+    error!(error = %error_message, "media translate request failed");
+}
+
 /// 记录直接工具调用接口的入口信息。
 pub fn log_http_tool_invoke_request(session_id: &str, user_id: &str, tool: &str, args: &Value) {
     info!(

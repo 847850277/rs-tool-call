@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
         config.default_system_prompt.clone(),
         config.max_iterations,
     ));
-    let capabilities = CapabilityHub::new(engine, extraction_llm);
+    let capabilities = CapabilityHub::new(engine, extraction_llm, config.media_translate.clone());
 
     logging::log_service_startup(
         &config.server_addr,
