@@ -2,7 +2,7 @@
 
 use anyhow::{Result, anyhow, bail};
 use reqwest::{
-    Client,
+    Client, StatusCode,
     header::{CONTENT_DISPOSITION, CONTENT_TYPE},
 };
 use serde::Deserialize;
@@ -186,44 +186,79 @@ impl FeishuBotClient {
             message_id,
             file_key
         );
-        let response = self
-            .http
-            .get(&url)
-            .bearer_auth(token)
-            .query(&[("type", resource_type)])
-            .send()
-            .await?;
-        let status = response.status();
-        let mime_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "audio/ogg".to_string());
-        let disposition = response
-            .headers()
-            .get(CONTENT_DISPOSITION)
-            .and_then(|value| value.to_str().ok())
-            .map(ToString::to_string);
-        let body = response.bytes().await?;
+        for candidate_type in resource_type_candidates(resource_type) {
+            let response = self
+                .http
+                .get(&url)
+                .bearer_auth(&token)
+                .query(&[("type", candidate_type)])
+                .send()
+                .await?;
+            let status = response.status();
+            let mime_type = response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "audio/ogg".to_string());
+            let disposition = response
+                .headers()
+                .get(CONTENT_DISPOSITION)
+                .and_then(|value| value.to_str().ok())
+                .map(ToString::to_string);
+            let body = response.bytes().await?;
 
-        if !status.is_success() {
-            let preview = String::from_utf8_lossy(&body);
+            if status.is_success() {
+                let format = infer_audio_format(&mime_type, disposition.as_deref(), format_hint)?;
+                return Ok(FeishuAudioResource {
+                    bytes: body.to_vec(),
+                    mime_type,
+                    format,
+                });
+            }
+
+            let error_body = String::from_utf8_lossy(&body).to_string();
+            if should_retry_resource_type(status, &error_body, candidate_type, resource_type) {
+                logging::log_channel_resource_fetch_retry(
+                    "feishu",
+                    message_id,
+                    file_key,
+                    candidate_type,
+                    &error_body,
+                );
+                continue;
+            }
+
             bail!(
-                "feishu message resource api returned HTTP {}: {}",
+                "feishu message resource api returned HTTP {} for type={}: {}",
                 status.as_u16(),
-                preview
+                candidate_type,
+                error_body
             );
         }
 
-        let format = infer_audio_format(&mime_type, disposition.as_deref(), format_hint)?;
-        Ok(FeishuAudioResource {
-            bytes: body.to_vec(),
-            mime_type,
-            format,
-        })
+        bail!("feishu message resource api returned invalid request params for all candidate types")
     }
+}
+
+fn resource_type_candidates(resource_type: &str) -> Vec<&str> {
+    match resource_type {
+        "audio" => vec!["audio", "file"],
+        "file" => vec!["file", "audio"],
+        other => vec![other, "file", "audio"],
+    }
+}
+
+fn should_retry_resource_type(
+    status: StatusCode,
+    body: &str,
+    attempted_type: &str,
+    original_type: &str,
+) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && body.contains("\"code\":234001")
+        && attempted_type == original_type
 }
 
 /// 将飞书回调负载解析成统一的入站文本/语音消息模型。
@@ -808,5 +843,27 @@ mod tests {
             }
             other => panic!("unexpected outcome: {other:?}"),
         }
+    }
+
+    #[test]
+    fn retries_audio_resource_type_after_invalid_param() {
+        assert!(should_retry_resource_type(
+            StatusCode::BAD_REQUEST,
+            r#"{"code":234001,"msg":"Invalid request param."}"#,
+            "audio",
+            "audio"
+        ));
+        assert!(!should_retry_resource_type(
+            StatusCode::BAD_REQUEST,
+            r#"{"code":234001,"msg":"Invalid request param."}"#,
+            "file",
+            "audio"
+        ));
+        assert!(!should_retry_resource_type(
+            StatusCode::UNAUTHORIZED,
+            r#"{"code":234001,"msg":"Invalid request param."}"#,
+            "audio",
+            "audio"
+        ));
     }
 }

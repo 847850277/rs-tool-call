@@ -152,6 +152,24 @@ pub fn log_channel_audio_transcribed(
     );
 }
 
+/// 记录消息资源下载接口因为参数不兼容而触发的重试。
+pub fn log_channel_resource_fetch_retry(
+    channel: &str,
+    message_id: &str,
+    file_key: &str,
+    attempted_type: &str,
+    error_message: &str,
+) {
+    info!(
+        channel = %channel,
+        message_id = %message_id,
+        file_key = %file_key,
+        attempted_type = %attempted_type,
+        error = %preview_text(error_message, 200),
+        "retrying channel message resource fetch with fallback type"
+    );
+}
+
 /// 记录被策略忽略的通道消息事件。
 pub fn log_channel_message_ignored(channel: &str, reason: &str) {
     info!(channel = %channel, reason, "ignored channel message event");
