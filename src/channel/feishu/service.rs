@@ -65,7 +65,12 @@ pub async fn handle_audio_message_event(
 ) -> Result<()> {
     let client = FeishuBotClient::new(config.clone());
     let audio = client
-        .download_audio_resource(&event.message_id, &event.file_key)
+        .download_audio_resource(
+            &event.message_id,
+            &event.file_key,
+            &event.resource_type,
+            event.format_hint.as_deref(),
+        )
         .await?;
     let audio_data_url = format!(
         "data:{};base64,{}",

@@ -53,6 +53,13 @@ struct FeishuAudioMessageContent {
     duration: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct FeishuFileMessageContent {
+    file_key: String,
+    #[serde(default)]
+    file_name: Option<String>,
+}
+
 impl FeishuBotClient {
     /// 创建一个飞书机器人客户端实例。
     pub fn new(config: FeishuCallbackConfig) -> Self {
@@ -169,6 +176,8 @@ impl FeishuBotClient {
         &self,
         message_id: &str,
         file_key: &str,
+        resource_type: &str,
+        format_hint: Option<&str>,
     ) -> Result<FeishuAudioResource> {
         let token = self.tenant_access_token().await?;
         let url = format!(
@@ -181,7 +190,7 @@ impl FeishuBotClient {
             .http
             .get(&url)
             .bearer_auth(token)
-            .query(&[("type", "audio")])
+            .query(&[("type", resource_type)])
             .send()
             .await?;
         let status = response.status();
@@ -208,7 +217,7 @@ impl FeishuBotClient {
             );
         }
 
-        let format = infer_audio_format(&mime_type, disposition.as_deref())?;
+        let format = infer_audio_format(&mime_type, disposition.as_deref(), format_hint)?;
         Ok(FeishuAudioResource {
             bytes: body.to_vec(),
             mime_type,
@@ -325,7 +334,34 @@ pub fn parse_message_event(
                 user_id,
                 session_id,
                 file_key: content.file_key,
+                resource_type: "audio".to_string(),
+                format_hint: None,
                 duration_ms: content.duration,
+            }))
+        }
+        "file" => {
+            let content = parse_file_message_content(content_raw)?;
+            let Some(format_hint) = content
+                .file_name
+                .as_deref()
+                .and_then(infer_audio_format_from_filename)
+            else {
+                return Ok(InboundMessageParseOutcome::Ignored {
+                    reason: "ignore non-audio file message event",
+                });
+            };
+            Ok(InboundMessageParseOutcome::Audio(InboundAudioMessage {
+                channel: ChannelKind::Feishu,
+                event_id,
+                message_id,
+                chat_id,
+                chat_type,
+                user_id,
+                session_id,
+                file_key: content.file_key,
+                resource_type: "file".to_string(),
+                format_hint: Some(format_hint.to_string()),
+                duration_ms: None,
             }))
         }
         _ => Ok(InboundMessageParseOutcome::Ignored {
@@ -368,16 +404,34 @@ fn parse_audio_message_content(content_raw: &str) -> Result<FeishuAudioMessageCo
     Ok(content)
 }
 
+/// 解析飞书文件消息内容，提取资源下载所需的 `file_key` 与文件名。
+fn parse_file_message_content(content_raw: &str) -> Result<FeishuFileMessageContent> {
+    let content: FeishuFileMessageContent = serde_json::from_str(content_raw)
+        .map_err(|error| anyhow!("invalid feishu file message content JSON: {error}"))?;
+    if content.file_key.trim().is_empty() {
+        bail!("feishu file message content missing file_key");
+    }
+    Ok(content)
+}
+
 /// 根据响应头推断语音资源格式，供后续转写模型使用。
-fn infer_audio_format(mime_type: &str, content_disposition: Option<&str>) -> Result<String> {
+fn infer_audio_format(
+    mime_type: &str,
+    content_disposition: Option<&str>,
+    format_hint: Option<&str>,
+) -> Result<String> {
+    if let Some(hint) = format_hint {
+        let normalized = normalize_audio_format(hint);
+        if !normalized.is_empty() {
+            return Ok(normalized.to_string());
+        }
+    }
+
     if let Some(disposition) = content_disposition
         && let Some(filename) = extract_filename_from_content_disposition(disposition)
-        && let Some(ext) = filename.rsplit('.').next()
+        && let Some(ext) = infer_audio_format_from_filename(&filename)
     {
-        let ext = ext.trim().to_lowercase();
-        if !ext.is_empty() {
-            return Ok(ext);
-        }
+        return Ok(ext.to_string());
     }
 
     let normalized = mime_type.trim().to_lowercase();
@@ -394,6 +448,29 @@ fn infer_audio_format(mime_type: &str, content_disposition: Option<&str>) -> Res
         }
     };
     Ok(format.to_string())
+}
+
+fn infer_audio_format_from_filename(filename: &str) -> Option<&'static str> {
+    let ext = filename.rsplit('.').next()?;
+    let normalized = normalize_audio_format(ext);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn normalize_audio_format(raw: &str) -> &'static str {
+    match raw.trim().to_lowercase().as_str() {
+        "wav" => "wav",
+        "mp3" => "mp3",
+        "ogg" => "ogg",
+        "opus" => "opus",
+        "aac" => "aac",
+        "amr" => "amr",
+        "m4a" => "m4a",
+        _ => "",
+    }
 }
 
 fn extract_filename_from_content_disposition(content_disposition: &str) -> Option<String> {
@@ -629,6 +706,8 @@ mod tests {
                 assert_eq!(event.channel, ChannelKind::Feishu);
                 assert_eq!(event.message_id, "om_audio_123");
                 assert_eq!(event.file_key, "file_v2_audio_key");
+                assert_eq!(event.resource_type, "audio");
+                assert_eq!(event.format_hint, None);
                 assert_eq!(event.duration_ms, Some(2300));
                 assert_eq!(event.session_id, "feishu:oc_audio_456");
             }
@@ -672,6 +751,7 @@ mod tests {
             InboundMessageParseOutcome::Audio(event) => {
                 assert_eq!(event.session_id, "feishu:oc_group_001");
                 assert_eq!(event.file_key, "file_v2_audio_key_2");
+                assert_eq!(event.resource_type, "audio");
             }
             other => panic!("unexpected outcome: {other:?}"),
         }
@@ -680,13 +760,53 @@ mod tests {
     #[test]
     fn infers_audio_format_from_headers() {
         assert_eq!(
-            infer_audio_format("audio/ogg", Some("attachment; filename=\"voice.ogg\""))
-                .expect("format should parse"),
+            infer_audio_format(
+                "audio/ogg",
+                Some("attachment; filename=\"voice.ogg\""),
+                None
+            )
+            .expect("format should parse"),
             "ogg"
         );
         assert_eq!(
-            infer_audio_format("audio/mpeg", None).expect("format should parse"),
+            infer_audio_format("audio/mpeg", None, None).expect("format should parse"),
             "mp3"
         );
+    }
+
+    #[test]
+    fn parses_audio_file_message_event() {
+        let payload = json!({
+            "header": {
+                "event_type": "im.message.receive_v1"
+            },
+            "event": {
+                "sender": {
+                    "sender_id": {
+                        "open_id": "ou_file_audio"
+                    },
+                    "sender_type": "user"
+                },
+                "message": {
+                    "message_id": "om_file_audio_123",
+                    "chat_id": "oc_file_audio_456",
+                    "chat_type": "group",
+                    "message_type": "file",
+                    "content": "{\"file_key\":\"file_v3_001\",\"file_name\":\"voice.wav\"}"
+                }
+            }
+        });
+
+        let outcome = parse_message_event(&payload, &FeishuCallbackConfig::default())
+            .expect("file audio event should parse");
+
+        match outcome {
+            InboundMessageParseOutcome::Audio(event) => {
+                assert_eq!(event.resource_type, "file");
+                assert_eq!(event.format_hint.as_deref(), Some("wav"));
+                assert_eq!(event.file_key, "file_v3_001");
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
     }
 }

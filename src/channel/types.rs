@@ -46,6 +46,8 @@ pub struct InboundAudioMessage {
     pub user_id: String,
     pub session_id: String,
     pub file_key: String,
+    pub resource_type: String,
+    pub format_hint: Option<String>,
     pub duration_ms: Option<u64>,
 }
 
