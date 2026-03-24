@@ -407,6 +407,17 @@ impl EnglishLearningCapability {
         )))
     }
 
+    /// 判断当前会话是否已经进入当天英语学习上下文。
+    pub async fn has_active_lesson_session(&self, session_id: &str) -> bool {
+        let Some(state) = self.session_store.get(session_id).await else {
+            return false;
+        };
+        match self.current_lesson_date() {
+            Ok(lesson_date) => state.lesson_date == lesson_date,
+            Err(_) => false,
+        }
+    }
+
     /// 确保今天的英语学习卡片已经存在，不存在则即时生成。
     pub async fn ensure_today_lesson(&self) -> Result<DailyEnglishLesson> {
         let lesson_date = self.current_lesson_date()?;

@@ -58,6 +58,23 @@ pub async fn handle_audio_message_event(
     event: InboundAudioMessage,
 ) -> Result<()> {
     let client = FeishuBotClient::new(config.clone());
+    if matches!(event.duration_ms, Some(0)) {
+        let reply = OutboundTextReply {
+            channel: event.channel,
+            reply_to_message_id: event.message_id.clone(),
+            session_id: event.session_id.clone(),
+            text: "我收到了这条语音，但飞书回调里显示时长是 0 秒。这种语音通常无法稳定转写，请重新录一条 1 秒以上、内容更完整的语音。".to_string(),
+        };
+        client.send_text_reply(&reply).await?;
+        logging::log_channel_text_replied(
+            reply.channel.as_str(),
+            &reply.reply_to_message_id,
+            &reply.session_id,
+            &reply.text,
+        );
+        return Ok(());
+    }
+
     let audio = client
         .download_audio_resource(
             &event.message_id,
@@ -71,10 +88,23 @@ pub async fn handle_audio_message_event(
         audio.mime_type,
         STANDARD.encode(&audio.bytes)
     );
-    let transcript = media_translate
+    let learning_audio_mode = english_learning
+        .has_active_lesson_session(&event.session_id)
+        .await;
+    let source_lang = if learning_audio_mode {
+        Some("en".to_string())
+    } else {
+        config.audio_source_lang.clone()
+    };
+    let target_lang = if learning_audio_mode {
+        "en".to_string()
+    } else {
+        config.audio_target_lang.clone()
+    };
+    let transcript_response = media_translate
         .execute(MediaTranslateRequest {
-            source_lang: config.audio_source_lang.clone(),
-            target_lang: config.audio_target_lang.clone(),
+            source_lang,
+            target_lang,
             input: MediaTranslateInput::Audio {
                 data: audio_data_url,
                 format: audio.format,
@@ -82,10 +112,32 @@ pub async fn handle_audio_message_event(
             output_audio: None,
             include_usage: true,
         })
-        .await?
-        .translated_text
-        .trim()
-        .to_string();
+        .await;
+    let transcript = match transcript_response {
+        Ok(value) => value.translated_text.trim().to_string(),
+        Err(error) => {
+            let reply = OutboundTextReply {
+                channel: event.channel,
+                reply_to_message_id: event.message_id.clone(),
+                session_id: event.session_id.clone(),
+                text: if learning_audio_mode {
+                    "我收到了这条英语跟读语音，但这次没有成功识别出英文文本。请尽量录制 1 秒以上、语速稍慢一点、环境更安静的语音后再试。".to_string()
+                } else {
+                    "我收到了这条语音，但这次没有成功识别出可用文本。请重新录一条更清晰、稍长一点的语音后再试。".to_string()
+                },
+            };
+            client.send_text_reply(&reply).await?;
+            logging::log_channel_text_replied(
+                reply.channel.as_str(),
+                &reply.reply_to_message_id,
+                &reply.session_id,
+                &reply.text,
+            );
+            return Err(anyhow::anyhow!(
+                "failed to transcribe channel audio: {error}"
+            ));
+        }
+    };
 
     if transcript.is_empty() {
         let reply = OutboundTextReply {

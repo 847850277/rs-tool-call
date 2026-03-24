@@ -106,7 +106,12 @@ impl MediaTranslateCapability {
             );
         }
 
-        parse_stream_response(&response_text).context("failed to parse media translate stream")
+        parse_stream_response(&response_text).with_context(|| {
+            format!(
+                "failed to parse media translate stream; response_preview={}",
+                preview_response_text(&response_text, 320)
+            )
+        })
     }
 }
 
@@ -284,6 +289,17 @@ fn iter_sse_data_payloads(raw: &str) -> impl Iterator<Item = &str> {
                 .filter(|value| !value.is_empty())
         })
     })
+}
+
+fn preview_response_text(raw: &str, max_chars: usize) -> String {
+    let trimmed = raw.trim();
+    let mut chars = trimmed.chars();
+    let preview = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
 }
 
 #[cfg(test)]
