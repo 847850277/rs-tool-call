@@ -98,6 +98,12 @@ impl AppConfig {
                     .with_context(|| {
                         "invalid FEISHU_BOT_REQUIRE_MENTION, expected true/false".to_string()
                     })?,
+                audio_source_lang: std::env::var("FEISHU_AUDIO_SOURCE_LANG")
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                audio_target_lang: std::env::var("FEISHU_AUDIO_TARGET_LANG")
+                    .unwrap_or_else(|_| "zh".to_string()),
             },
             exec_command_tool: ExecCommandToolConfig {
                 enabled: parse_bool_env("EXEC_COMMAND_TOOL_ENABLED", false).with_context(|| {

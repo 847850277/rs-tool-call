@@ -9,4 +9,6 @@ pub struct FeishuCallbackConfig {
     pub app_secret: Option<String>,
     pub open_base_url: String,
     pub require_mention: bool,
+    pub audio_source_lang: Option<String>,
+    pub audio_target_lang: String,
 }

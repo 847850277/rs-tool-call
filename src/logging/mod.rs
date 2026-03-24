@@ -9,6 +9,7 @@ mod preview;
 mod startup;
 
 pub use channel::{
+    log_channel_audio_message_received, log_channel_audio_transcribed,
     log_channel_background_error, log_channel_callback_body_read_error,
     log_channel_callback_ingress, log_channel_callback_json_error,
     log_channel_callback_process_error, log_channel_callback_processed,

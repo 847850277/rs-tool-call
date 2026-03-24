@@ -5,4 +5,7 @@ pub mod feishu;
 #[path = "channel/types.rs"]
 mod types;
 
-pub use types::{ChannelKind, InboundMessageParseOutcome, InboundTextMessage, OutboundTextReply};
+pub use types::{
+    ChannelKind, InboundAudioMessage, InboundMessageParseOutcome, InboundTextMessage,
+    OutboundTextReply,
+};

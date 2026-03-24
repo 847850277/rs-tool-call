@@ -16,8 +16,9 @@ use crate::{
     },
     channel::InboundMessageParseOutcome,
     channel::feishu::{
-        FeishuCallbackErrorKind, callback_ack, extract_event_type, handle_text_message_event,
-        parse_message_event, process_callback as process_feishu_callback,
+        FeishuCallbackErrorKind, callback_ack, extract_event_type, handle_audio_message_event,
+        handle_text_message_event, parse_message_event,
+        process_callback as process_feishu_callback,
     },
     forms::validate_form_data,
     logging,
@@ -159,6 +160,37 @@ pub(crate) async fn feishu_callback(req: &mut Request, depot: &mut Depot, res: &
                     tokio::spawn(async move {
                         if let Err(error) = handle_text_message_event(
                             background_state.capabilities.conversation().clone(),
+                            background_state.config.feishu_callback.clone(),
+                            event,
+                        )
+                        .await
+                        {
+                            logging::log_channel_background_error(
+                                event_channel.as_str(),
+                                &error.to_string(),
+                            );
+                        }
+                    });
+                    res.render(Json(callback_ack()));
+                }
+                Ok(InboundMessageParseOutcome::Audio(event)) => {
+                    logging::log_channel_audio_message_received(
+                        event.channel.as_str(),
+                        event.event_id.as_deref(),
+                        &event.message_id,
+                        event.chat_id.as_deref(),
+                        event.chat_type.as_deref(),
+                        &event.session_id,
+                        &event.user_id,
+                        &event.file_key,
+                        event.duration_ms,
+                    );
+                    let background_state = state.clone();
+                    let event_channel = event.channel;
+                    tokio::spawn(async move {
+                        if let Err(error) = handle_audio_message_event(
+                            background_state.capabilities.conversation().clone(),
+                            background_state.capabilities.media_translate().clone(),
                             background_state.config.feishu_callback.clone(),
                             event,
                         )

@@ -34,12 +34,28 @@ pub struct InboundTextMessage {
     pub text: String,
 }
 
+/// 统一的入站音频消息模型。
+/// 当前先覆盖语音消息需要的最小字段，后续如果接视频/文件可再继续扩展。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundAudioMessage {
+    pub channel: ChannelKind,
+    pub event_id: Option<String>,
+    pub message_id: String,
+    pub chat_id: Option<String>,
+    pub chat_type: Option<String>,
+    pub user_id: String,
+    pub session_id: String,
+    pub file_key: String,
+    pub duration_ms: Option<u64>,
+}
+
 /// 通用消息解析结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InboundMessageParseOutcome {
     NotMessageEvent,
     Ignored { reason: &'static str },
     Text(InboundTextMessage),
+    Audio(InboundAudioMessage),
 }
 
 /// 统一的出站文本回复模型。

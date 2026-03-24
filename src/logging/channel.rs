@@ -110,6 +110,48 @@ pub fn log_channel_text_message_received(
     );
 }
 
+/// 记录识别到的通道语音消息事件。
+pub fn log_channel_audio_message_received(
+    channel: &str,
+    event_id: Option<&str>,
+    message_id: &str,
+    chat_id: Option<&str>,
+    chat_type: Option<&str>,
+    session_id: &str,
+    user_id: &str,
+    file_key: &str,
+    duration_ms: Option<u64>,
+) {
+    info!(
+        channel = %channel,
+        event_id = ?event_id,
+        message_id = %message_id,
+        chat_id = ?chat_id,
+        chat_type = ?chat_type,
+        session_id = %session_id,
+        user_id = %user_id,
+        file_key = %file_key,
+        duration_ms = ?duration_ms,
+        "received channel audio message event"
+    );
+}
+
+/// 记录语音消息已完成转写。
+pub fn log_channel_audio_transcribed(
+    channel: &str,
+    message_id: &str,
+    session_id: &str,
+    transcript: &str,
+) {
+    info!(
+        channel = %channel,
+        message_id = %message_id,
+        session_id = %session_id,
+        transcript_preview = %preview_text(transcript, 160),
+        "transcribed channel audio message"
+    );
+}
+
 /// 记录被策略忽略的通道消息事件。
 pub fn log_channel_message_ignored(channel: &str, reason: &str) {
     info!(channel = %channel, reason, "ignored channel message event");
@@ -139,7 +181,7 @@ pub fn log_channel_background_error(channel: &str, error_message: &str) {
     error!(
         channel = %channel,
         error = %error_message,
-        "failed to process channel text message event"
+        "failed to process channel message event"
     );
 }
 
