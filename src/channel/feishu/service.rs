@@ -23,7 +23,7 @@ pub async fn handle_text_message_event(
     config: FeishuCallbackConfig,
     event: InboundTextMessage,
 ) -> Result<()> {
-    let answer = build_reply_text(
+    let answer = build_text_reply(
         &conversation,
         &english_learning,
         &event.session_id,
@@ -109,7 +109,7 @@ pub async fn handle_audio_message_event(
         &event.session_id,
         &transcript,
     );
-    let answer = build_reply_text(
+    let answer = build_audio_reply(
         &conversation,
         &english_learning,
         &event.session_id,
@@ -142,7 +142,7 @@ pub fn callback_ack() -> Value {
     })
 }
 
-async fn build_reply_text(
+async fn build_text_reply(
     conversation: &ConversationCapability,
     english_learning: &EnglishLearningCapability,
     session_id: &str,
@@ -164,6 +164,52 @@ async fn build_reply_text(
             session_id: session_id.to_string(),
             user_id: user_id.to_string(),
             message: message.to_string(),
+            system_prompt: None,
+            max_iterations: None,
+            persist: true,
+        })
+        .await?;
+
+    let answer = if response.answer.trim().is_empty() {
+        "我暂时还没有合适的回复，请稍后再试。".to_string()
+    } else {
+        response.answer
+    };
+    Ok(answer)
+}
+
+async fn build_audio_reply(
+    conversation: &ConversationCapability,
+    english_learning: &EnglishLearningCapability,
+    session_id: &str,
+    user_id: &str,
+    transcript: &str,
+) -> Result<String> {
+    if let Some(reply) = english_learning
+        .maybe_handle_message(session_id, transcript)
+        .await?
+    {
+        let trimmed = reply.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Some(reply) = english_learning
+        .maybe_handle_shadowing_audio(session_id, transcript)
+        .await?
+    {
+        let trimmed = reply.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let response = conversation
+        .execute(ConversationRequest {
+            session_id: session_id.to_string(),
+            user_id: user_id.to_string(),
+            message: transcript.to_string(),
             system_prompt: None,
             max_iterations: None,
             persist: true,

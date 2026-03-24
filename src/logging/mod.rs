@@ -29,7 +29,7 @@ pub use http::{
 pub use learning::{
     log_learning_background_error, log_learning_command_handled, log_learning_config,
     log_learning_lesson_saved, log_learning_news_ingest_started, log_learning_news_selected,
-    log_learning_scheduler_started,
+    log_learning_scheduler_started, log_learning_shadowing_evaluated,
 };
 pub use llm::{log_llm_request, log_llm_response};
 pub use preview::{preview_bytes, preview_json, preview_text};

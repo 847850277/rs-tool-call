@@ -79,6 +79,26 @@ pub fn log_learning_command_handled(session_id: &str, command: &str, lesson_date
     );
 }
 
+/// 记录一次跟读文本评估结果。
+pub fn log_learning_shadowing_evaluated(
+    session_id: &str,
+    lesson_date: &str,
+    score_percent: u8,
+    matched_word_count: usize,
+    target_word_count: usize,
+    transcript: &str,
+) {
+    info!(
+        session_id = %session_id,
+        lesson_date = %lesson_date,
+        score_percent,
+        matched_word_count,
+        target_word_count,
+        transcript_preview = %preview_text(transcript, 160),
+        "evaluated english learning shadowing audio"
+    );
+}
+
 /// 记录英语学习后台任务失败。
 pub fn log_learning_background_error(stage: &str, error_message: &str) {
     error!(stage = %stage, error = %error_message, "english learning background task failed");

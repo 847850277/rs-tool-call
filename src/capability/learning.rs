@@ -93,6 +93,7 @@ pub struct EnglishLearningCapability {
 
 #[derive(Debug, Clone, Default)]
 struct LearningSessionState {
+    lesson_date: String,
     focus_sentence: String,
     next_question_index: usize,
 }
@@ -112,6 +113,18 @@ enum LearningCommand {
     StartTodayLesson,
     ExplainFocusSentence,
     NextQuestion,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ShadowingEvaluation {
+    should_handle: bool,
+    exact_match: bool,
+    score_percent: u8,
+    matched_word_count: usize,
+    target_word_count: usize,
+    spoken_word_count: usize,
+    missing_tokens: Vec<String>,
+    extra_tokens: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,6 +363,50 @@ impl EnglishLearningCapability {
         Ok(Some(reply))
     }
 
+    /// 在已有学习会话中，尝试把语音转写文本当作跟读内容来做句子比对。
+    pub async fn maybe_handle_shadowing_audio(
+        &self,
+        session_id: &str,
+        transcript: &str,
+    ) -> Result<Option<String>> {
+        if !self.config.enabled {
+            return Ok(None);
+        }
+
+        let Some(state) = self.session_store.get(session_id).await else {
+            return Ok(None);
+        };
+        let lesson = self.ensure_today_lesson().await?;
+        if !state.lesson_date.trim().is_empty() && state.lesson_date != lesson.lesson_date {
+            return Ok(None);
+        }
+
+        let focus_sentence = if state.focus_sentence.trim().is_empty() {
+            select_focus_sentence(&lesson)
+        } else {
+            state.focus_sentence.clone()
+        };
+        let evaluation = evaluate_shadowing_attempt(&focus_sentence, transcript);
+        if !evaluation.should_handle {
+            return Ok(None);
+        }
+
+        logging::log_learning_shadowing_evaluated(
+            session_id,
+            &lesson.lesson_date,
+            evaluation.score_percent,
+            evaluation.matched_word_count,
+            evaluation.target_word_count,
+            transcript,
+        );
+
+        Ok(Some(format_shadowing_feedback(
+            &focus_sentence,
+            transcript,
+            &evaluation,
+        )))
+    }
+
     /// 确保今天的英语学习卡片已经存在，不存在则即时生成。
     pub async fn ensure_today_lesson(&self) -> Result<DailyEnglishLesson> {
         let lesson_date = self.current_lesson_date()?;
@@ -419,6 +476,7 @@ impl EnglishLearningCapability {
                 .get(session_id)
                 .await
                 .unwrap_or_else(|| LearningSessionState {
+                    lesson_date: lesson.lesson_date.clone(),
                     focus_sentence: fallback_focus.clone(),
                     next_question_index: 0,
                 });
@@ -459,6 +517,7 @@ impl EnglishLearningCapability {
                 .get(session_id)
                 .await
                 .unwrap_or_else(|| LearningSessionState {
+                    lesson_date: lesson.lesson_date.clone(),
                     focus_sentence: select_focus_sentence(lesson),
                     next_question_index: 0,
                 });
@@ -558,7 +617,7 @@ impl LearningSessionStore {
     async fn start_session(
         &self,
         session_id: &str,
-        _lesson_date: &str,
+        lesson_date: &str,
         focus_sentence: &str,
         next_question_index: usize,
     ) {
@@ -566,6 +625,7 @@ impl LearningSessionStore {
         guard.insert(
             session_id.to_string(),
             LearningSessionState {
+                lesson_date: lesson_date.to_string(),
                 focus_sentence: focus_sentence.to_string(),
                 next_question_index,
             },
@@ -778,7 +838,7 @@ fn format_lesson_card(lesson: &DailyEnglishLesson, first_question: &str) -> Stri
         });
 
     format!(
-        "今日英语学习卡片 {}\n\n新闻标题：{}\n中文导读：{}\n\n英文摘要：{}\n\n重点词汇：\n{}\n\n重点句子：\n{}\n{}\n\n理解题 1：\n{}\n\n跟读练习：{}\n翻译练习：{}\n\n你可以继续回复“这句话什么意思”或“再出一道题”。",
+        "今日英语学习卡片 {}\n\n新闻标题：{}\n中文导读：{}\n\n英文摘要：{}\n\n重点词汇：\n{}\n\n重点句子：\n{}\n{}\n\n理解题 1：\n{}\n\n跟读练习：{}\n翻译练习：{}\n\n你可以继续回复“这句话什么意思”“再出一道题”，也可以直接发送一段英语跟读语音，我会帮你对照重点句子。",
         lesson.lesson_date,
         lesson.article.title,
         lesson.headline_zh,
@@ -873,6 +933,187 @@ fn coalesce_non_empty(values: &[&str]) -> String {
         .to_string()
 }
 
+fn evaluate_shadowing_attempt(focus_sentence: &str, transcript: &str) -> ShadowingEvaluation {
+    let target_tokens = tokenize_shadowing_text(focus_sentence);
+    let spoken_tokens = tokenize_shadowing_text(transcript);
+    if target_tokens.is_empty() || spoken_tokens.len() < 3 {
+        return ShadowingEvaluation::default();
+    }
+
+    let ascii_letter_count = transcript
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .count();
+    if ascii_letter_count < 6 {
+        return ShadowingEvaluation::default();
+    }
+
+    let (matched_word_count, matched_pairs) =
+        longest_common_subsequence(&target_tokens, &spoken_tokens);
+    let coverage_ratio = matched_word_count as f32 / target_tokens.len() as f32;
+    let fidelity_ratio =
+        (2 * matched_word_count) as f32 / (target_tokens.len() + spoken_tokens.len()) as f32;
+    let should_handle = coverage_ratio >= 0.45 || fidelity_ratio >= 0.45;
+    if !should_handle {
+        return ShadowingEvaluation::default();
+    }
+
+    let mut matched_target_indices = HashSet::new();
+    let mut matched_spoken_indices = HashSet::new();
+    for (target_index, spoken_index) in matched_pairs {
+        matched_target_indices.insert(target_index);
+        matched_spoken_indices.insert(spoken_index);
+    }
+
+    let missing_tokens = dedupe_tokens_preserving_order(
+        target_tokens
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !matched_target_indices.contains(index))
+            .map(|(_, token)| token.clone())
+            .collect(),
+    );
+    let extra_tokens = dedupe_tokens_preserving_order(
+        spoken_tokens
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !matched_spoken_indices.contains(index))
+            .map(|(_, token)| token.clone())
+            .collect(),
+    );
+
+    ShadowingEvaluation {
+        should_handle: true,
+        exact_match: target_tokens == spoken_tokens,
+        score_percent: (fidelity_ratio * 100.0).round().clamp(0.0, 100.0) as u8,
+        matched_word_count,
+        target_word_count: target_tokens.len(),
+        spoken_word_count: spoken_tokens.len(),
+        missing_tokens,
+        extra_tokens,
+    }
+}
+
+fn format_shadowing_feedback(
+    focus_sentence: &str,
+    transcript: &str,
+    evaluation: &ShadowingEvaluation,
+) -> String {
+    let headline = if evaluation.exact_match || evaluation.score_percent >= 92 {
+        "这次跟读很稳，识别结果和重点句子已经非常接近。"
+    } else if evaluation.score_percent >= 75 {
+        "这次跟读整体不错，主体内容已经跟上了。"
+    } else {
+        "这次跟读和目标句子还有一些距离，可以再慢一点读一遍。"
+    };
+
+    let missing_hint = format_token_hint("建议补上", &evaluation.missing_tokens, 4);
+    let extra_hint = format_token_hint("可能读成了", &evaluation.extra_tokens, 4);
+    let mut adjustment_lines = Vec::new();
+    if let Some(line) = missing_hint {
+        adjustment_lines.push(line);
+    }
+    if let Some(line) = extra_hint {
+        adjustment_lines.push(line);
+    }
+    if adjustment_lines.is_empty() {
+        adjustment_lines.push("整体文本已经比较完整，可以继续练重音和停顿。".to_string());
+    }
+
+    format!(
+        "跟读反馈：\n{}\n\n目标句子：\n{}\n\n语音识别结果：\n{}\n\n文本匹配度：{}%（命中 {}/{} 个关键词，识别共 {} 个单词）\n{}\n\n说明：当前反馈基于语音转写文本比对，不直接评估口音和音色。你也可以继续回复“这句话什么意思”或“再出一道题”。",
+        headline,
+        focus_sentence,
+        transcript.trim(),
+        evaluation.score_percent,
+        evaluation.matched_word_count,
+        evaluation.target_word_count,
+        evaluation.spoken_word_count,
+        adjustment_lines.join("\n"),
+    )
+}
+
+fn tokenize_shadowing_text(input: &str) -> Vec<String> {
+    input
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '\'' {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .replace('\'', "")
+        .split_whitespace()
+        .map(|token| token.to_string())
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn longest_common_subsequence(
+    target_tokens: &[String],
+    spoken_tokens: &[String],
+) -> (usize, Vec<(usize, usize)>) {
+    let mut dp = vec![vec![0usize; spoken_tokens.len() + 1]; target_tokens.len() + 1];
+    for target_index in 0..target_tokens.len() {
+        for spoken_index in 0..spoken_tokens.len() {
+            dp[target_index + 1][spoken_index + 1] =
+                if target_tokens[target_index] == spoken_tokens[spoken_index] {
+                    dp[target_index][spoken_index] + 1
+                } else {
+                    dp[target_index + 1][spoken_index].max(dp[target_index][spoken_index + 1])
+                };
+        }
+    }
+
+    let mut matched_pairs = Vec::new();
+    let mut target_index = target_tokens.len();
+    let mut spoken_index = spoken_tokens.len();
+    while target_index > 0 && spoken_index > 0 {
+        if target_tokens[target_index - 1] == spoken_tokens[spoken_index - 1] {
+            matched_pairs.push((target_index - 1, spoken_index - 1));
+            target_index -= 1;
+            spoken_index -= 1;
+        } else if dp[target_index - 1][spoken_index] >= dp[target_index][spoken_index - 1] {
+            target_index -= 1;
+        } else {
+            spoken_index -= 1;
+        }
+    }
+    matched_pairs.reverse();
+    (dp[target_tokens.len()][spoken_tokens.len()], matched_pairs)
+}
+
+fn dedupe_tokens_preserving_order(tokens: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for token in tokens {
+        if seen.insert(token.clone()) {
+            deduped.push(token);
+        }
+    }
+    deduped
+}
+
+fn format_token_hint(label: &str, tokens: &[String], max_tokens: usize) -> Option<String> {
+    if tokens.is_empty() {
+        return None;
+    }
+    let preview = tokens
+        .iter()
+        .take(max_tokens)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if tokens.len() > max_tokens {
+        " 等"
+    } else {
+        ""
+    };
+    Some(format!("{label}：{preview}{suffix}"))
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -959,5 +1200,28 @@ mod tests {
         assert!(card.contains("今日英语学习卡片"));
         assert!(card.contains("Markets rallied after the announcement."));
         assert!(card.contains("Why did markets rally?"));
+        assert!(card.contains("英语跟读语音"));
+    }
+
+    #[test]
+    fn evaluates_shadowing_attempt_for_close_match() {
+        let evaluation = evaluate_shadowing_attempt(
+            "President Trump is seeking a deal with Iran.",
+            "President Trump is seeking deal with Iran",
+        );
+
+        assert!(evaluation.should_handle);
+        assert!(evaluation.score_percent >= 80);
+        assert!(evaluation.missing_tokens.contains(&"a".to_string()));
+    }
+
+    #[test]
+    fn ignores_unrelated_audio_transcript_for_shadowing() {
+        let evaluation = evaluate_shadowing_attempt(
+            "President Trump is seeking a deal with Iran.",
+            "Can you explain what happened in the news today",
+        );
+
+        assert!(!evaluation.should_handle);
     }
 }
