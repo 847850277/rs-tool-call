@@ -210,7 +210,8 @@ impl FeishuBotClient {
             let body = response.bytes().await?;
 
             if status.is_success() {
-                let format = infer_audio_format(&mime_type, disposition.as_deref(), format_hint)?;
+                let format =
+                    infer_audio_format(&mime_type, disposition.as_deref(), format_hint, &body)?;
                 return Ok(FeishuAudioResource {
                     bytes: body.to_vec(),
                     mime_type,
@@ -454,6 +455,7 @@ fn infer_audio_format(
     mime_type: &str,
     content_disposition: Option<&str>,
     format_hint: Option<&str>,
+    bytes: &[u8],
 ) -> Result<String> {
     if let Some(hint) = format_hint {
         let normalized = normalize_audio_format(hint);
@@ -467,6 +469,10 @@ fn infer_audio_format(
         && let Some(ext) = infer_audio_format_from_filename(&filename)
     {
         return Ok(ext.to_string());
+    }
+
+    if let Some(format) = infer_audio_format_from_magic(bytes) {
+        return Ok(format.to_string());
     }
 
     let normalized = mime_type.trim().to_lowercase();
@@ -506,6 +512,28 @@ fn normalize_audio_format(raw: &str) -> &'static str {
         "m4a" => "m4a",
         _ => "",
     }
+}
+
+fn infer_audio_format_from_magic(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        return Some("wav");
+    }
+    if bytes.starts_with(b"OggS") {
+        return Some("ogg");
+    }
+    if bytes.starts_with(b"ID3") {
+        return Some("mp3");
+    }
+    if bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0 {
+        return Some("mp3");
+    }
+    if bytes.starts_with(b"#!AMR") {
+        return Some("amr");
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return Some("m4a");
+    }
+    None
 }
 
 fn extract_filename_from_content_disposition(content_disposition: &str) -> Option<String> {
@@ -798,14 +826,32 @@ mod tests {
             infer_audio_format(
                 "audio/ogg",
                 Some("attachment; filename=\"voice.ogg\""),
-                None
+                None,
+                b""
             )
             .expect("format should parse"),
             "ogg"
         );
         assert_eq!(
-            infer_audio_format("audio/mpeg", None, None).expect("format should parse"),
+            infer_audio_format("audio/mpeg", None, None, b"").expect("format should parse"),
             "mp3"
+        );
+    }
+
+    #[test]
+    fn infers_audio_format_from_magic_bytes() {
+        let wav_bytes = b"RIFF\x24\x80\x00\x00WAVEfmt ";
+        assert_eq!(
+            infer_audio_format("audio/octet-stream", None, None, wav_bytes)
+                .expect("wav should be inferred"),
+            "wav"
+        );
+
+        let ogg_bytes = b"OggS\x00\x02\x00\x00";
+        assert_eq!(
+            infer_audio_format("audio/octet-stream", None, None, ogg_bytes)
+                .expect("ogg should be inferred"),
+            "ogg"
         );
     }
 
